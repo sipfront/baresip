@@ -9,6 +9,7 @@
 #include <baresip.h>
 #include "mqtt.h"
 
+static char tls_alpn[256] = "";
 
 static char broker_host[256] = "127.0.0.1";
 /* Broker CA file for TLS usage, default none */
@@ -23,11 +24,14 @@ static char mqttclientid[256] = "baresip";
 static char mqttbasetopic[128] = "baresip";
 static char mqttpublishtopic[256] = "";
 static char mqttsubscribetopic[256] = "";
+static uint32_t mqttpublishqos = 0;
+static uint32_t mqttsubscribeqos = 0;
 
 static uint32_t broker_port = 1883;
 
 static struct mqtt s_mqtt;
 
+extern int publish_buffered_messages(struct mqtt *mqtt);
 
 static void fd_handler(int flags, void *arg)
 {
@@ -72,6 +76,12 @@ static void connect_callback(struct mosquitto *mosq, void *obj, int result)
 
 	info("mqtt: connected to broker at %s:%d\n",
 	     broker_host, broker_port);
+    mqtt->is_connected = 1;
+
+    err = publish_buffered_messages(mqtt);
+	if (err) {
+		warning("mqtt: publish_buffered_messages failed (%m)\n", err);
+	}
 
 	err = mqtt_subscribe_start(mqtt);
 	if (err) {
@@ -88,9 +98,7 @@ static void tmr_reconnect(void *data)
 	err = mosquitto_reconnect(mqtt->mosq);
 	if (err == MOSQ_ERR_SUCCESS) {
 		mqtt->fd = mosquitto_socket(mqtt->mosq);
-
-		err = fd_listen(&mqtt->fhs, mqtt->fd, FD_READ, fd_handler,
-				mqtt);
+		err = fd_listen(mqtt->fd, FD_READ, fd_handler, mqtt);
 		if (err) {
 			warning("mqtt: reconnect fd_listen failed\n");
 			return;
@@ -110,14 +118,12 @@ static void disconnect_callback(struct mosquitto *mosq, void *obj, int rc)
 	struct mqtt *mqtt = obj;
 	(void) mosq;
 
-	/* Check for expected disconnect */
-	if (rc == 0)
-		return;
-
-	warning("mqtt: connection lost (%s)\n", mosquitto_strerror(rc));
-	tmr_cancel(&mqtt->tmr);
-	mqtt->fhs = fd_close(mqtt->fhs);
-	tmr_start(&mqtt->tmr, 1000, tmr_reconnect, mqtt);
+	if (rc == MOSQ_ERR_NO_CONN) {
+		warning("mqtt: connection lost\n");
+		tmr_cancel(&mqtt->tmr);
+		fd_close(mqtt->fd);
+		tmr_start(&mqtt->tmr, 1000, tmr_reconnect, mqtt);
+	}
 }
 
 
@@ -148,7 +154,11 @@ static int module_init(void)
 		     mqttpublishtopic, sizeof(mqttpublishtopic));
 	conf_get_str(conf_cur(), "mqtt_subscribetopic",
 		     mqttsubscribetopic, sizeof(mqttsubscribetopic));
+    conf_get_u32(conf_cur(), "mqtt_publishqos", &mqttpublishqos);
+    conf_get_u32(conf_cur(), "mqtt_subscribeqos", &mqttsubscribeqos);    
 	conf_get_u32(conf_cur(), "mqtt_broker_port", &broker_port);
+    conf_get_str(conf_cur(), "mqtt_tls_alpn",
+             tls_alpn, sizeof(tls_alpn));    
 
 	info("mqtt: connecting to broker at %s:%d as %s topic %s\n",
 		broker_host, broker_port, mqttclientid, mqttbasetopic);
@@ -162,12 +172,16 @@ static int module_init(void)
 				"/%s/event", mqttbasetopic);
 	}
 
-	info("mqtt: Publishing on %s, subscribing to %s\n",
-		mqttpublishtopic, mqttsubscribetopic);
+   info("mqtt: Publishing on %s with QoS %u, " \
+           "subscribing to %s with QoS %u\n",
+       mqttpublishtopic, mqttpublishqos,
+       mqttsubscribetopic, mqttsubscribeqos);
 
 	s_mqtt.basetopic = mqttbasetopic;
 	s_mqtt.subtopic = mqttsubscribetopic;
 	s_mqtt.pubtopic = mqttpublishtopic;
+    s_mqtt.pubqos = (int) mqttpublishqos;
+    s_mqtt.subqos = (int) mqttsubscribeqos;    
 
 
 	s_mqtt.mosq = mosquitto_new(mqttclientid, true, &s_mqtt);
@@ -176,10 +190,18 @@ static int module_init(void)
 		return ENOMEM;
 	}
 
+	if (*tls_alpn != '\0') {
+        info("mqtt: setting TLS ALPN to %s\n", tls_alpn);
+        ret = mosquitto_string_option(s_mqtt.mosq, MOSQ_OPT_TLS_ALPN, tls_alpn);
+		if (ret != MOSQ_ERR_SUCCESS)
+			return ret == MOSQ_ERR_ERRNO ? errno : EIO;
+	}
+
 	err = mqtt_subscribe_init(&s_mqtt);
 	if (err)
 		return err;
 
+    s_mqtt.is_connected = 0;
 	mosquitto_connect_callback_set(s_mqtt.mosq, connect_callback);
 	mosquitto_disconnect_callback_set(s_mqtt.mosq, disconnect_callback);
 
@@ -216,21 +238,20 @@ static int module_init(void)
 		return err;
 
 	s_mqtt.fd = mosquitto_socket(s_mqtt.mosq);
-	s_mqtt.fhs = NULL;
 
-	err = fd_listen(&s_mqtt.fhs, s_mqtt.fd, FD_READ, fd_handler, &s_mqtt);
+	err = fd_listen(s_mqtt.fd, FD_READ, fd_handler, &s_mqtt);
 	if (err)
 		return err;
 
 	info("mqtt: module loaded\n");
 
-	return 0;
+	return err;
 }
 
 
 static int module_close(void)
 {
-	s_mqtt.fhs = fd_close(s_mqtt.fhs);
+	fd_close(s_mqtt.fd);
 
 	mqtt_publish_close();
 
@@ -239,6 +260,11 @@ static int module_close(void)
 	tmr_cancel(&s_mqtt.tmr);
 
 	if (s_mqtt.mosq) {
+
+        int err = publish_buffered_messages(&s_mqtt);
+        if (err) {
+            warning("mqtt: publish_buffered_messages failed on shutdown (%m)\n", err);
+        }
 
 		mosquitto_disconnect(s_mqtt.mosq);
 

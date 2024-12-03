@@ -10,9 +10,11 @@ struct mqtt {
 	char *pubtopic;		/* Topic for publish */
 	char *subtopic;		/* Topic for subscribe */
 	char *basetopic;	/* Base topic */
+	int pubqos;			/* QoS for publish */
+	int subqos;			/* QoS for subscribe */
 	struct tmr tmr;
-	re_sock_t fd;
-	struct re_fhs *fhs;
+	int fd;
+    int is_connected;
 };
 
 
