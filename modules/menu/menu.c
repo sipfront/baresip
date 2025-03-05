@@ -57,7 +57,7 @@ static int menu_set_incall(bool incall)
 	return err;
 }
 
-
+// Here it is possible to change the timer granularity
 static void tmrstat_handler(void *arg)
 {
 	(void)arg;
@@ -66,6 +66,7 @@ static void tmrstat_handler(void *arg)
 	if (!menu.curcall)
 		return;
 
+	// instead of 100 we could change the delay to 10ms
 	tmr_start(&menu.tmr_stat, 100, tmrstat_handler, 0);
 
 	if (ui_isediting(baresip_uis()))
