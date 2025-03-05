@@ -1648,12 +1648,34 @@ int call_status(struct re_printf *pf, const struct call *call)
 		return 0;
 	}
 
-	err = re_hprintf(pf, "\r[%H]", print_duration, call);
+	const struct audio *audio_object = call_audio(call);
+
+	//-------------------------------------------------------------------------
+	// [1] .. 'call' is SIP Call Control object
+	// [2] .. 'call' has a member 'audio'
+	// [3] .. 'audio' is a struct that describes a Generic Audio stream
+	// [4] .. in 'audio' there are two struct called
+	// 			- 'autx'
+	// 			- 'audio_recv'
+	// [5] .. 'autx' describes the Audio transmit/encoder
+	// [6] .. 'audio_recv' describes the Audio receive pipeline
+	//
+	// Details
+	// -------
+	// 'autx' has two specific struct members, namely
+	//			- uint64_t ts_ext 	.. Ext. Timestamp for outgoing RTP
+	// 			- uint32_t ts_base 	.. First timestamp sent
+	//
+	// Use audio debug to get more information
+	// err = re_hprintf(pf, "\r[%H]", print_duration, call);
+
+	// Audio debug information
+	err = audio_debug(pf, audio_object);
 
 	FOREACH_STREAM
 		err |= stream_print(pf, le->data);
 
-	err |= re_hprintf(pf, " (bit/s)");
+	// err |= re_hprintf(pf, " (bit/s)");
 
 	if (call->video)
 		err |= video_print(pf, call->video);
