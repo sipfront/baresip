@@ -10,7 +10,8 @@
 #include <rem.h>
 #include <baresip.h>
 #include "core.h"
-
+#include <time.h>
+#include <sys/time.h>
 
 /**
  * Audio receive pipeline
@@ -73,6 +74,40 @@ struct audio_recv {
 	bool done_first;              /**< First auplay write done flag      */
 };
 
+double get_dmax(const struct audio_recv *rx) {
+	if (!rx)
+		return 0;
+
+	return (double) rx->stats.dmax / 1000;
+}
+
+double get_jitter(const struct audio_recv *rx) {
+	if (!rx)
+		return 0;
+
+	return (double) rx->stats.jitter / 1000;
+}
+
+uint64_t get_n_discard(const struct audio_recv *rx) {
+	if (!rx)
+		return 0;
+
+	return rx->stats.n_discard / 1000;
+}
+
+double get_seconds(const struct audio_recv *rx)
+{
+	uint64_t dur;
+	double seconds;
+
+	if (!rx->ac)
+		return .0;
+
+	dur = timestamp_duration(&rx->ts_recv);
+	seconds = timestamp_calc_seconds(dur, rx->ac->crate);
+
+	return seconds;
+}
 
 static void destructor(void *arg)
 {
@@ -361,6 +396,31 @@ void aurecv_receive(struct audio_recv *ar, const struct rtp_header *hdr,
 	 * It should use timestamp to decide if a frame should be replaced. */
 /*        if (lostc)*/
 /*                (void)aurecv_stream_decode(ar, hdr, mb, lostc, drop);*/
+
+	// At this point, detect audio marker/cue > before the streaming data is decoded
+	//
+
+	//---------------------------------------------------------------
+	struct timeval tv;
+    struct tm *tm_info;
+    char timestamp_rx[30];
+	char concat_timestamp[100];
+
+	// Get the current time with microseconds
+    gettimeofday(&tv, NULL);
+
+    // Convert to local time (seconds)
+    tm_info = localtime(&tv.tv_sec);
+
+	// Format date and time without milliseconds
+    strftime(timestamp_rx, 30, "%d-%m-%Y %H:%M:%S", tm_info);
+	sprintf(concat_timestamp,
+		"timestamp_rx=%s.%03ld\n",
+		timestamp_rx,
+		tv.tv_usec / 1000);
+
+	info(concat_timestamp);
+	//---------------------------------------------------------------
 
 	(void)aurecv_stream_decode(ar, hdr, mb, 0, drop);
 
@@ -781,6 +841,25 @@ int aurecv_debug(struct re_printf *pf, const struct audio_recv *ar)
 	else {
 		err |= mbuf_printf(mb, "       time = (not started)\n");
 	}
+
+	// ------------------------------------------------------------------------
+	struct timeval tv;
+    struct tm *tm_info;
+    char buffer[30];
+
+	// Get the current time with microseconds
+    gettimeofday(&tv, NULL);
+
+    // Convert to local time (seconds)
+    tm_info = localtime(&tv.tv_sec);
+
+	// Format date and time without milliseconds
+    strftime(buffer, 30, "%d-%m-%Y %H:%M:%S", tm_info);
+
+	err |= mbuf_printf(mb, "       %s.%03ld; latency = %lu ms\n",
+			buffer,
+			tv.tv_usec / 1000,
+			aurecv_latency(ar));
 
 	err |= mbuf_printf(mb, "       player: %s,%s %s\n",
 			  ar->ap ? ar->ap->name : "none",
