@@ -105,12 +105,19 @@ struct account {
 /*
  * Audio Stream
  */
-
 struct audio;
-
+struct autx *get_autx(const struct audio *au);
+struct audio_recv *get_aurx(const struct audio *au);
 int  audio_send_digit(struct audio *a, char key);
 void audio_sdp_attr_decode(struct audio *a);
 
+/*
+ * Audio transmit/encoder
+ */
+struct autx;
+uint32_t get_first_timestamp(const struct autx *audio_tx);
+uint64_t get_rtp_time_out(const struct autx *audio_tx);
+uint32_t get_packet_time(const struct autx *audio_tx);
 
 /*
  * Audio Codec
@@ -121,8 +128,11 @@ int aucodec_print(struct re_printf *pf, const struct aucodec *ac);
 /*
  * Audio Receiver Pipeline
  */
-
 struct audio_recv;
+double get_dmax(const struct audio_recv *rx);
+double get_jitter(const struct audio_recv *rx);
+uint64_t get_n_discard(const struct audio_recv *rx);
+double get_seconds(const struct audio_recv *ar);
 
 int  aurecv_alloc(struct audio_recv **aupp, const struct config_audio *cfg,
 		  size_t sampc, uint32_t ptime);
