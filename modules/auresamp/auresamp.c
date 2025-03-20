@@ -5,9 +5,11 @@
  * Copyright (C) 2022 Commend.com - c.spielberger@commend.com
  */
 
-#include <re.h>
-#include <rem.h>
-#include <baresip.h>
+ #include <re.h>
+ #include <rem.h>
+ #include <stdlib.h>
+ #include <baresip.h>
+ #include <sys/time.h>
 
 
 /**
@@ -92,7 +94,7 @@ static int sampv_alloc(struct auresamp_st *st, struct auframe *af)
 
 static int rsampv_check_size(struct auresamp_st *st, struct auframe *af)
 {
-	uint64_t ptime;
+	size_t ptime;
 	size_t psize;
 
 	ptime = af->sampc * 1000 / af->srate;
@@ -155,11 +157,86 @@ static int common_update(struct auresamp_st **stp, struct aufilt_prm *oprm,
 }
 
 
+/**
+* Detects a click in the audio by identifying a sudden amplitude change.
+*
+* @param audio_data   Array of audio samples.
+* @param num_samples  Total number of samples in the audio.
+* @return             Index of the click event if found, -1 otherwise.
+*/
+int detect_click(int16_t *audio_data, const int num_samples, char *char_buffer)
+{
+	double abs_amplitude_diff = .0;
+	for (int i = 1; i < num_samples; i++) {
+	// Check if there is a sudden amplitude jump
+	abs_amplitude_diff = abs(audio_data[i] - audio_data[i - 1]);
+	if (abs_amplitude_diff > CLICK_THRESHOLD_MIN) {
+		 	calculate_timestamp(char_buffer);
+		 	info("%s: Click detected at sample index: %d\n", char_buffer, i);
+		 	return i;
+		}
+	}
+	return -1;
+}
+
+/**
+ * @brief Generates a formatted timestamp string with milliseconds.
+ *
+ * This function retrieves the current system time with microsecond precision,
+ * formats it as "DD-MM-YYYY HH:MM:SS.mmm", and stores the result in the provided buffer.
+ *
+ * @param char_buffer Pointer to a character buffer where the formatted timestamp
+ *                    will be stored. The buffer must be at least 30 bytes in size.
+ *
+ * @note The function modifies the contents of `char_buffer` in place.
+ *       Ensure that the buffer is properly allocated before calling this function.
+ */
+void calculate_timestamp(char *char_buffer) {
+	struct timeval tv;
+	struct tm *tm_info;
+	// Get the current time with microseconds
+	gettimeofday(&tv, NULL);
+
+	// Convert to local time (seconds)
+	tm_info = localtime(&tv.tv_sec);
+
+	// Format date and time without milliseconds
+	char temp_buffer[20];
+	size_t written_chars = strftime(temp_buffer, 20, "%d-%m-%Y %H:%M:%S", tm_info);
+	snprintf(char_buffer, written_chars+5, "%s.%03ld", temp_buffer, tv.tv_usec / 1000);
+}
+
+/**
+ * Resamples an audio frame to match the desired sample rate and channel count.
+ *
+ * This function checks if resampling is necessary and, if so:
+ * - Converts input audio to S16LE format if required.
+ * - Configures or updates the resampler.
+ * - Performs resampling and updates the audio frame.
+ * - Converts the output back to the desired format if needed.
+ *
+ * @param st  Pointer to the resampler state.
+ * @param af  Pointer to the audio frame to be resampled.
+ *
+ * @return 0 on success, or an error code on failure.
+ */
 static int common_resample(struct auresamp_st *st, struct auframe *af)
 {
 	size_t rsampc;
 	int16_t *sampv;
 	int err = 0;
+
+	// Important > https://github.com/baresip/baresip/issues/185#issuecomment-748043712
+	// on the callee side > activated pulse audio instead of alsa
+	// char buffer[30];
+	// int click_index = -1;
+	// click_index = detect_click(af->sampv, af->sampc, buffer);
+	// if (click_index != -1)
+	// {
+	//     calculate_timestamp(buffer);
+	// 	info("%s: Click detected at sample index: %d Time position: %.6f seconds\n",
+	// 		buffer, click_index, (double) (click_index) / af->srate);
+	// }
 
 	if (st->dbg) {
 		debug("auresamp: resample %s %u/%u --> %u/%u\n", st->dbg,
@@ -174,6 +251,15 @@ static int common_resample(struct auresamp_st *st, struct auframe *af)
 		st->rsampsz = 0;
 		st->rsampv = mem_deref(st->rsampv);
 		st->sampv  = mem_deref(st->sampv);
+
+		// click_index = detect_click(st->rsampv, af->sampc);
+		// if (click_index != -1)
+		// {
+    	//     calculate_timestamp(buffer);
+		// 	info("%s: Click detected at sample index: %d Time position: %.6f seconds\n",
+		// 		buffer, click_index, (double) (click_index) / af->srate);
+    	// }
+
 		return 0;
 	}
 
@@ -215,6 +301,13 @@ static int common_resample(struct auresamp_st *st, struct auframe *af)
 	else {
 		af->sampv = st->rsampv;
 	}
+
+	// click_index = detect_click(af->sampv, af->sampc);
+	// if (click_index != -1) {
+	// 	calculate_timestamp(buffer);
+	// 	info("%s: Click detected at sample index: %d Time position: %.6f seconds\n",
+	// 		buffer, click_index, (double) (click_index) / af->srate);
+	// }
 
 	return err;
 }
