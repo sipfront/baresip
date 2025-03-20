@@ -31,6 +31,10 @@ extern "C" {
  */
 #define VIDEO_TIMEBASE 1000000U
 
+/** Define the minimum Threshold between two samples to detect a click */
+#ifndef CLICK_THRESHOLD_MIN
+#define CLICK_THRESHOLD_MIN 30000
+#endif
 
 /* forward declarations */
 struct sa;
@@ -44,6 +48,7 @@ struct vidframe;
 struct vidrect;
 struct vidsz;
 
+void calculate_timestamp(char *char_buffer);
 
 /*
  * Account
@@ -285,6 +290,7 @@ int call_msg_src(const struct call *call, struct sa *sa);
 enum sip_transp call_transp(const struct call *call);
 enum sdp_neg_state call_sdp_neg_state(const struct call *call);
 bool call_sdp_change_allowed(const struct call *call);
+int detect_click(int16_t *audio_data, const int num_samples, char *char_buffer);
 
 /*
  * Custom headers
