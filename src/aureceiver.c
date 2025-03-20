@@ -313,7 +313,7 @@ static int aurecv_stream_decode(struct audio_recv *ar,
 
 
 /* RFC 5285 -- A General Mechanism for RTP Header Extensions */
-static const struct rtpext *rtpext_find(const struct rtpext *extv, size_t extc,
+const struct rtpext *rtpext_find(const struct rtpext *extv, size_t extc,
 					uint8_t id)
 {
 	for (size_t i=0; i<extc; i++) {
