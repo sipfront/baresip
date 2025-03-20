@@ -228,15 +228,9 @@ static int common_resample(struct auresamp_st *st, struct auframe *af)
 
 	// Important > https://github.com/baresip/baresip/issues/185#issuecomment-748043712
 	// on the callee side > activated pulse audio instead of alsa
-	// char buffer[30];
-	// int click_index = -1;
-	// click_index = detect_click(af->sampv, af->sampc, buffer);
-	// if (click_index != -1)
-	// {
-	//     calculate_timestamp(buffer);
-	// 	info("%s: Click detected at sample index: %d Time position: %.6f seconds\n",
-	// 		buffer, click_index, (double) (click_index) / af->srate);
-	// }
+	char buffer[30];
+	int click_index = -1;
+	click_index = detect_click(af->sampv, af->sampc, buffer);
 
 	if (st->dbg) {
 		debug("auresamp: resample %s %u/%u --> %u/%u\n", st->dbg,
@@ -252,7 +246,7 @@ static int common_resample(struct auresamp_st *st, struct auframe *af)
 		st->rsampv = mem_deref(st->rsampv);
 		st->sampv  = mem_deref(st->sampv);
 
-		// click_index = detect_click(st->rsampv, af->sampc);
+		// click_index = detect_click(st->rsampv, af->sampc, buffer);
 		// if (click_index != -1)
 		// {
     	//     calculate_timestamp(buffer);
@@ -302,7 +296,7 @@ static int common_resample(struct auresamp_st *st, struct auframe *af)
 		af->sampv = st->rsampv;
 	}
 
-	// click_index = detect_click(af->sampv, af->sampc);
+	click_index = detect_click(af->sampv, af->sampc, buffer);
 	// if (click_index != -1) {
 	// 	calculate_timestamp(buffer);
 	// 	info("%s: Click detected at sample index: %d Time position: %.6f seconds\n",

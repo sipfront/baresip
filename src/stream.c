@@ -741,14 +741,12 @@ struct sdp_media *stream_sdpmedia(const struct stream *strm)
 int stream_send(struct stream *s, bool ext, bool marker, int pt, uint32_t ts,
 		struct mbuf *mb)
 {
-	//---------------------------------------------------------------
+	/*
 	struct timeval tv;
     struct tm *tm_info;
     char timestamp_tx[30];
 	char concat_timestamp[100];
-
-	//---------------------------------------------------------------
-
+	*/
 
 	int err = 0;
 
@@ -774,19 +772,16 @@ int stream_send(struct stream *s, bool ext, bool marker, int pt, uint32_t ts,
 		err = rtp_send(s->rtp, &s->tx.raddr_rtp, ext, marker, pt, ts,
 			       tmr_jiffies_rt_usec(), mb);
 
-		// Get the current time with microseconds
-    	gettimeofday(&tv, NULL);
-
-    	// Convert to local time (seconds)
+		/*
+		gettimeofday(&tv, NULL);
     	tm_info = localtime(&tv.tv_sec);
-
-		// Format date and time without milliseconds
     	strftime(timestamp_tx, 30, "%d-%m-%Y %H:%M:%S", tm_info);
 		sprintf(concat_timestamp,
 		"timestamp_tx=%s.%03ld\n",
 		timestamp_tx,
 		tv.tv_usec / 1000);
 		info(concat_timestamp);
+		*/
 
 		mtx_unlock(s->tx.lock);
 		if (err)

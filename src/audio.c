@@ -384,27 +384,6 @@ static int append_rtpext(struct audio *au, struct mbuf *mb,
 static void encode_rtp_send(struct audio *a, struct autx *tx,
 			    struct auframe *af)
 {
-	//---------------------------------------------------------------
-	// struct timeval tv;
-    // struct tm *tm_info;
-    // char timestamp_tx[30];
-	// char concat_timestamp[100];
-
-	// Get the current time with microseconds
-    // gettimeofday(&tv, NULL);
-
-    // Convert to local time (seconds)
-    // tm_info = localtime(&tv.tv_sec);
-
-	// Format date and time without milliseconds
-    // strftime(timestamp_tx, 30, "%d-%m-%Y %H:%M:%S", tm_info);
-	// sprintf(concat_timestamp,
-	// 	"timestamp_tx=%s.%03ld\n",
-	// 	timestamp_tx,
-	// 	tv.tv_usec / 1000);
-
-	//---------------------------------------------------------------
-
 	struct bundle *bun = stream_bundle(a->strm);
 	bool bundled = bundle_state(bun) != BUNDLE_NONE;
 	size_t frame_size;  /* number of samples per channel */
