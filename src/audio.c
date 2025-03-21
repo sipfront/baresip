@@ -1793,17 +1793,15 @@ int audio_debug(struct re_printf *pf, const struct audio *a)
 
 	/*
 	struct timeval tv;
-    struct tm *tm_info;
-    char buffer[30];
-
-    gettimeofday(&tv, NULL);
+	struct tm *tm_info;
+	char buffer[30];
+	gettimeofday(&tv, NULL);
 	tm_info = localtime(&tv.tv_sec);
-
-    strftime(buffer, 30, "%d-%m-%Y %H:%M:%S", tm_info);
-	timestamp, time_tx, ptime, ts_ext, t_base, time_rx, latency, sw_jitter, deviation, n_discard, last
-	err = re_hprintf(pf, "%s.%03ld, %.3f, %u, %llu, %u, %.3f, %lu, %.2f, %.2f, %llu\n",
+	strftime(buffer, 30, "%d-%m-%Y %H:%M:%S", tm_info);
+	err = re_hprintf(
+		pf, "%s.%03ld, %.3f, %u, %llu, %u, %.3f, %lu, %.2f, %.2f, %llu\n",
 			buffer,
-		 	tv.tv_usec / 1000,
+			tv.tv_usec / 1000,
 			autx_calc_seconds(tx),
 			get_packet_time(tx),
 			get_rtp_time_out(tx),

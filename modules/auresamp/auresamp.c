@@ -168,7 +168,7 @@ int detect_click(int16_t *audio_data, const int num_samples, char *char_buffer)
 {
 	double abs_amplitude_diff = .0;
 	for (int i = 1; i < num_samples; i++) {
-	// Check if there is a sudden amplitude jump
+	/* Check if there is a sudden amplitude jump */
 	abs_amplitude_diff = abs(audio_data[i] - audio_data[i - 1]);
 	if (abs_amplitude_diff > CLICK_THRESHOLD_MIN) {
 		 	calculate_timestamp(char_buffer);
@@ -183,31 +183,36 @@ int detect_click(int16_t *audio_data, const int num_samples, char *char_buffer)
  * @brief Generates a formatted timestamp string with milliseconds.
  *
  * This function retrieves the current system time with microsecond precision,
- * formats it as "DD-MM-YYYY HH:MM:SS.mmm", and stores the result in the provided buffer.
+ * formats it as "DD-MM-YYYY HH:MM:SS.mmm", and stores the result
+ * in the provided buffer.
  *
- * @param char_buffer Pointer to a character buffer where the formatted timestamp
- *                    will be stored. The buffer must be at least 30 bytes in size.
+ * @param char_buffer Pointer to a character buffer where the formatted
+ * timestamp will be stored. The buffer must be at least 30 bytes in size.
  *
  * @note The function modifies the contents of `char_buffer` in place.
- *       Ensure that the buffer is properly allocated before calling this function.
+ *  Ensure that the buffer is properly allocated before calling this function.
  */
 void calculate_timestamp(char *char_buffer) {
 	struct timeval tv;
 	struct tm *tm_info;
-	// Get the current time with microseconds
+	/* Get the current time with microseconds */
 	gettimeofday(&tv, NULL);
 
-	// Convert to local time (seconds)
+	/* Convert to local time (seconds) */
 	tm_info = localtime(&tv.tv_sec);
 
-	// Format date and time without milliseconds
+	/* Format date and time without milliseconds */
 	char temp_buffer[20];
-	size_t written_chars = strftime(temp_buffer, 20, "%d-%m-%Y %H:%M:%S", tm_info);
-	snprintf(char_buffer, written_chars+5, "%s.%03ld", temp_buffer, tv.tv_usec / 1000);
+	size_t written_chars = strftime(temp_buffer,
+		20, "%d-%m-%Y %H:%M:%S", tm_info);
+
+	snprintf(char_buffer,
+		written_chars+5, "%s.%03ld", temp_buffer, tv.tv_usec / 1000);
 }
 
 /**
- * Resamples an audio frame to match the desired sample rate and channel count.
+ * Resamples an audio frame to match the desired sample rate and
+ * channel count.
  *
  * This function checks if resampling is necessary and, if so:
  * - Converts input audio to S16LE format if required.
@@ -228,7 +233,7 @@ static int common_resample(struct auresamp_st *st, struct auframe *af)
 
 	char buffer[30];
 	int click_index = -1;
-	// click_index = detect_click(af->sampv, af->sampc, buffer);
+	/* click_index = detect_click(af->sampv, af->sampc, buffer); */
 	if (st->dbg) {
 		debug("auresamp: resample %s %u/%u --> %u/%u\n", st->dbg,
 		      af->srate, af->ch, st->oprm.srate, st->oprm.ch);

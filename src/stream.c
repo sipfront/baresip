@@ -743,8 +743,8 @@ int stream_send(struct stream *s, bool ext, bool marker, int pt, uint32_t ts,
 {
 	/*
 	struct timeval tv;
-    struct tm *tm_info;
-    char timestamp_tx[30];
+	struct tm *tm_info;
+	char timestamp_tx[30];
 	char concat_timestamp[100];
 	*/
 
@@ -774,8 +774,8 @@ int stream_send(struct stream *s, bool ext, bool marker, int pt, uint32_t ts,
 
 		/*
 		gettimeofday(&tv, NULL);
-    	tm_info = localtime(&tv.tv_sec);
-    	strftime(timestamp_tx, 30, "%d-%m-%Y %H:%M:%S", tm_info);
+		tm_info = localtime(&tv.tv_sec);
+		strftime(timestamp_tx, 30, "%d-%m-%Y %H:%M:%S", tm_info);
 		sprintf(concat_timestamp,
 		"timestamp_tx=%s.%03ld\n",
 		timestamp_tx,
