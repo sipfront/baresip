@@ -248,21 +248,21 @@ static int common_resample(struct auresamp_st *st, struct auframe *af)
 		st->rsampv = mem_deref(st->rsampv);
 		st->sampv  = mem_deref(st->sampv);
 
-		/* if you want to get a free segmentation faul, there are two ways to
-		achieve this fell free to
+		/* if you want to get a free segmentation fault.
+		There are two ways to achieve this fell free to
 
-		1. invoke detect_click(st->rsampv, af->sampc, buffer) here after the
-		memory was cleared!
+		1. invoke detect_click(st->rsampv, af->sampc, buffer)
+		here after the memory was cleared!
 
 		mem_deref() does the following:
 		- Dereference a reference-counted memory object.
-		- When the reference count is zero, the destroy handler will be called
-		(if present) and the memory will be freed
+		- When the reference count is zero, the destroy
+		handler will be called (if present) and the memory
+		will be freed
 
 		2. use 'st->rsampv' instead of 'af->sampv'
 
 		100% guarantee
-
 		*/
 
 		click_index = detect_click(af->sampv, af->sampc, buffer);

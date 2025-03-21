@@ -290,7 +290,8 @@ int call_msg_src(const struct call *call, struct sa *sa);
 enum sip_transp call_transp(const struct call *call);
 enum sdp_neg_state call_sdp_neg_state(const struct call *call);
 bool call_sdp_change_allowed(const struct call *call);
-int detect_click(int16_t *audio_data, const int num_samples, char *char_buffer);
+int detect_click(int16_t *audio_data, const int num_samples,
+				char *char_buffer);
 
 /*
  * Custom headers
