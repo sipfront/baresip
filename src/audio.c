@@ -1799,18 +1799,19 @@ int audio_debug(struct re_printf *pf, const struct audio *a)
 	tm_info = localtime(&tv.tv_sec);
 	strftime(buffer, 30, "%d-%m-%Y %H:%M:%S", tm_info);
 	err = re_hprintf(
-		pf, "%s.%03ld, %.3f, %u, %llu, %u, %.3f, %lu, %.2f, %.2f, %llu\n",
-			buffer,
-			tv.tv_usec / 1000,
-			autx_calc_seconds(tx),
-			get_packet_time(tx),
-			get_rtp_time_out(tx),
-			get_first_timestamp(tx),
-			get_seconds(rx),
-			aurecv_latency(rx),
-			get_jitter(rx),
-			get_dmax(rx),
-			get_n_discard(rx));
+	pf,
+	"%s.%03ld, %.3f, %u, %llu, %u, %.3f, %lu, %.2f, %.2f, %llu\n",
+	buffer,
+	tv.tv_usec / 1000,
+	autx_calc_seconds(tx),
+	get_packet_time(tx),
+	get_rtp_time_out(tx),
+	get_first_timestamp(tx),
+	get_seconds(rx),
+	aurecv_latency(rx),
+	get_jitter(rx),
+	get_dmax(rx),
+	get_n_discard(rx));
 	*/
 
 	err |= aurecv_debug(pf, a->aur);
