@@ -1663,8 +1663,8 @@ int call_status(struct re_printf *pf, const struct call *call)
 	Details
 	-------
 	'autx' has two specific struct members, namely
-			- uint64_t ts_ext 	.. Ext. Timestamp for outgoing RTP
-			- uint32_t ts_base 	.. First timestamp sent
+	- uint64_t ts_ext 	.. Ext. Timestamp for outgoing RTP
+	- uint32_t ts_base 	.. First timestamp sent
 
 	Use audio debug to get more information
 	err = re_hprintf(pf, "\r[%H]", print_duration, call);

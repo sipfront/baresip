@@ -172,7 +172,8 @@ int detect_click(int16_t *audio_data, const int num_samples, char *char_buffer)
 	abs_amplitude_diff = abs(audio_data[i] - audio_data[i - 1]);
 	if (abs_amplitude_diff > CLICK_THRESHOLD_MIN) {
 		 	calculate_timestamp(char_buffer);
-		 	info("%s: Click detected at sample index: %d\n", char_buffer, i);
+		 	info("%s: Click detected at sample index: %d\n",
+				char_buffer, i);
 		 	return i;
 		}
 	}
