@@ -164,9 +164,9 @@ static const char *uri_aulevel = "urn:ietf:params:rtp-hdrext:ssrc-audio-level";
  *
  * @return adress to autx
 */
-struct autx *get_autx(const struct audio *au)
+const struct autx *get_autx(const struct audio *au)
 {
-	// should be equivalent to return !au ? NULL : &(au->tx);
+	/* should be equivalent to return !au ? NULL : &(au->tx); */
 	if (!au)
 		return NULL;
 
@@ -465,10 +465,11 @@ static void encode_rtp_send(struct audio *a, struct autx *tx,
 
 		if (len) {
 			mtx_lock(a->tx.mtx);
-			// Shortly before we send the audio over the stream
+			/* Shortly before we send the audio over the stream */
 			err = stream_send(a->strm, ext_len!=0, marker, -1,
 					  rtp_ts, tx->mb);
-			// info(concat_timestamp);
+
+			/* info(concat_timestamp); */
 			mtx_unlock(a->tx.mtx);
 			if (err)
 				goto out;
@@ -1756,16 +1757,16 @@ int audio_level_get(const struct audio *a, double *levelp)
  */
 int audio_debug(struct re_printf *pf, const struct audio *a)
 {
-	struct autx *tx = get_autx(a);
- 	// struct audio_recv *rx = get_aurx(a);
-
+	/*const struct autx *tx = get_autx(a); */
+ 	/* struct audio_recv *rx = get_aurx(a); */
+	const struct autx *tx;
 	size_t sztx;
 	int err;
 
 	if (!a)
 		return 0;
 
-	// tx = &a->tx;
+	tx = &a->tx;
 	sztx = aufmt_sample_size(tx->src_fmt);
 	err  = re_hprintf(pf, "%s", "\n--- Audio stream ---\n");
 	err |= re_hprintf(pf, " tx:   encode: %H ptime=%ums %s\n",
@@ -1790,33 +1791,29 @@ int audio_debug(struct re_printf *pf, const struct audio *a)
 	err |= re_hprintf(pf, "       time = %.3f sec\n",
 			  autx_calc_seconds(tx));
 
-	// ------------------------------------------------------------------------
-	// struct timeval tv;
-    // struct tm *tm_info;
-    // char buffer[30];
+	/*
+	struct timeval tv;
+    struct tm *tm_info;
+    char buffer[30];
 
-	// Get the current time with microseconds
-    // gettimeofday(&tv, NULL);
+    gettimeofday(&tv, NULL);
+	tm_info = localtime(&tv.tv_sec);
 
-    // Convert to local time (seconds)
-    // tm_info = localtime(&tv.tv_sec);
-
-	// Format date and time without milliseconds
-    // strftime(buffer, 30, "%d-%m-%Y %H:%M:%S", tm_info);
-
-	// timestamp, time_tx, ptime, ts_ext, t_base, time_rx, latency, sw_jitter, deviation, n_discard, last
-	// err = re_hprintf(pf, "%s.%03ld, %.3f, %u, %llu, %u, %.3f, %lu, %.2f, %.2f, %llu\n",
-	// 		buffer,
-	// 	 	tv.tv_usec / 1000,
-	// 		autx_calc_seconds(tx),
-	// 		get_packet_time(tx),
-	// 		get_rtp_time_out(tx),
-	// 		get_first_timestamp(tx),
-	// 		get_seconds(rx),
-	// 		aurecv_latency(rx), 	// audio latency is the length of the current audio buffer (in ms)
-	// 		get_jitter(rx),
-	// 		get_dmax(rx),
-	// 		get_n_discard(rx));
+    strftime(buffer, 30, "%d-%m-%Y %H:%M:%S", tm_info);
+	timestamp, time_tx, ptime, ts_ext, t_base, time_rx, latency, sw_jitter, deviation, n_discard, last
+	err = re_hprintf(pf, "%s.%03ld, %.3f, %u, %llu, %u, %.3f, %lu, %.2f, %.2f, %llu\n",
+			buffer,
+		 	tv.tv_usec / 1000,
+			autx_calc_seconds(tx),
+			get_packet_time(tx),
+			get_rtp_time_out(tx),
+			get_first_timestamp(tx),
+			get_seconds(rx),
+			aurecv_latency(rx),
+			get_jitter(rx),
+			get_dmax(rx),
+			get_n_discard(rx));
+	*/
 
 	err |= aurecv_debug(pf, a->aur);
 	err |= re_hprintf(pf,
@@ -1824,7 +1821,7 @@ int audio_debug(struct re_printf *pf, const struct audio *a)
 			  " %H\n",
 			  autx_print_pipeline, tx,
 			  aurecv_print_pipeline, a->aur);
-	// err |= stream_debug(pf, a->strm);
+	err |= stream_debug(pf, a->strm);
 
 	return err;
 }

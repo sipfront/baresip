@@ -106,7 +106,7 @@ struct account {
  * Audio Stream
  */
 struct audio;
-struct autx *get_autx(const struct audio *au);
+const struct autx *get_autx(const struct audio *au);
 struct audio_recv *get_aurx(const struct audio *au);
 int  audio_send_digit(struct audio *a, char key);
 void audio_sdp_attr_decode(struct audio *a);
@@ -160,6 +160,8 @@ bool aurecv_level_set(const struct audio_recv *ar);
 double aurecv_level(const struct audio_recv *ar);
 int aurecv_debug(struct re_printf *pf, const struct audio_recv *ar);
 int aurecv_print_pipeline(struct re_printf *pf, const struct audio_recv *ar);
+const struct rtpext *rtpext_find(const struct rtpext *extv, size_t extc,
+	uint8_t id);
 
 
 /*

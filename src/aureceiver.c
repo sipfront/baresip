@@ -817,25 +817,6 @@ int aurecv_debug(struct re_printf *pf, const struct audio_recv *ar)
 		err |= mbuf_printf(mb, "       time = (not started)\n");
 	}
 
-	// ------------------------------------------------------------------------
-	struct timeval tv;
-    struct tm *tm_info;
-    char buffer[30];
-
-	// Get the current time with microseconds
-    gettimeofday(&tv, NULL);
-
-    // Convert to local time (seconds)
-    tm_info = localtime(&tv.tv_sec);
-
-	// Format date and time without milliseconds
-    strftime(buffer, 30, "%d-%m-%Y %H:%M:%S", tm_info);
-
-	err |= mbuf_printf(mb, "       %s.%03ld; latency = %lu ms\n",
-			buffer,
-			tv.tv_usec / 1000,
-			aurecv_latency(ar));
-
 	err |= mbuf_printf(mb, "       player: %s,%s %s\n",
 			  ar->ap ? ar->ap->name : "none",
 			  ar->device,
