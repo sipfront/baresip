@@ -48,6 +48,7 @@ struct vidframe;
 struct vidrect;
 struct vidsz;
 
+void calculate_timestamp(char *char_buffer);
 
 /*
  * Account
