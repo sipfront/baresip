@@ -196,11 +196,14 @@ void calculate_timestamp(char *char_buffer) {
  * @param index index where the Click was detected inside the audioframe
  */
 void baresip_click_event_handler(const char *char_buffer, const int index) {
-    info("Click detected at %s, at frame index %d\n", char_buffer, index);
-
-    // Notify Baresip
-    ua_event(NULL, UA_EVENT_AUDIO_LATENCY_VALUE, NULL,
-		"Click detected at %s, at frame index %d\n", char_buffer, index);
+    /* Notify Baresip */
+	bevent_app_emit(
+		UA_EVENT_AUDIO_LATENCY_VALUE,
+		NULL,
+		"Click detected at %s, at frame index %d\n",
+		char_buffer,
+		index
+	);
 }
 
 /**
@@ -227,9 +230,6 @@ int detect_click(
 			if (event_handler) {
 				event_handler(char_buffer, i);
 			}
-
-		 	info("%s: Click detected at sample index: %d\n",
-			char_buffer, i);
 		 	return i;
 		}
 	}
