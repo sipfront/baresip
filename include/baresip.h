@@ -36,6 +36,9 @@ extern "C" {
 #define CLICK_THRESHOLD_MIN 30000
 #endif
 
+// Define function pointer for event callback
+typedef void (*ClickEventHandler)(const char *char_buffer, const int index);
+
 /* forward declarations */
 struct sa;
 struct sdp_media;
@@ -49,6 +52,7 @@ struct vidrect;
 struct vidsz;
 
 void calculate_timestamp(char *char_buffer);
+void baresip_click_event_handler(const char *char_buffer, const int index);
 
 /*
  * Account
@@ -291,8 +295,11 @@ int call_msg_src(const struct call *call, struct sa *sa);
 enum sip_transp call_transp(const struct call *call);
 enum sdp_neg_state call_sdp_neg_state(const struct call *call);
 bool call_sdp_change_allowed(const struct call *call);
-int detect_click(int16_t *audio_data, const int num_samples,
-	char *char_buffer);
+int detect_click(
+	int16_t *audio_data,
+	const int num_samples,
+	char *char_buffer,
+	ClickEventHandler event_handler);
 
 /*
  * Custom headers
@@ -916,6 +923,8 @@ enum ua_event {
     UA_EVENT_CALL_STAT,
 
 	UA_EVENT_MAX,
+
+	UA_EVENT_AUDIO_LATENCY_VALUE,
 };
 
 

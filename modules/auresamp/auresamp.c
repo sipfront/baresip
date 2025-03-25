@@ -156,30 +156,6 @@ static int common_update(struct auresamp_st **stp, struct aufilt_prm *oprm,
 	return 0;
 }
 
-
-/**
-* Detects a click in the audio by identifying a sudden amplitude change.
-*
-* @param audio_data   Array of audio samples.
-* @param num_samples  Total number of samples in the audio.
-* @return             Index of the click event if found, -1 otherwise.
-*/
-int detect_click(int16_t *audio_data, const int num_samples, char *char_buffer)
-{
-	double abs_amplitude_diff = .0;
-	for (int i = 1; i < num_samples; i++) {
-	/* Check if there is a sudden amplitude jump */
-	abs_amplitude_diff = abs(audio_data[i] - audio_data[i - 1]);
-	if (abs_amplitude_diff > CLICK_THRESHOLD_MIN) {
-		 	calculate_timestamp(char_buffer);
-		 	info("%s: Click detected at sample index: %d\n",
-				char_buffer, i);
-		 	return i;
-		}
-	}
-	return -1;
-}
-
 /**
  * @brief Generates a formatted timestamp string with milliseconds.
  *
@@ -191,7 +167,7 @@ int detect_click(int16_t *audio_data, const int num_samples, char *char_buffer)
  * timestamp will be stored. The buffer must be at least 30 bytes in size.
  *
  * @note The function modifies the contents of `char_buffer` in place.
- *  Ensure that the buffer is properly allocated before calling this function.
+ * Ensure that the buffer is properly allocated before calling this function.
  */
 void calculate_timestamp(char *char_buffer) {
 	struct timeval tv;
@@ -209,6 +185,55 @@ void calculate_timestamp(char *char_buffer) {
 
 	snprintf(char_buffer,
 		written_chars+5, "%s.%03ld", temp_buffer, tv.tv_usec / 1000);
+}
+
+/**
+ * Event handler that triggers a Baresip event when a click is detected.
+ *
+ * @param char_buffer Pointer to a character buffer where the formatted
+ * timestamp will be stored. The buffer must be at least 30 bytes in size.
+ *
+ * @param index index where the Click was detected inside the audioframe
+ */
+void baresip_click_event_handler(const char *char_buffer, const int index) {
+    info("Click detected at %s, at frame index %d\n", char_buffer, index);
+
+    // Notify Baresip
+    ua_event(NULL, UA_EVENT_AUDIO_LATENCY_VALUE, NULL,
+		"Click detected at %s, at frame index %d\n", char_buffer, index);
+}
+
+/**
+* Detects a click in the audio by identifying a sudden amplitude change.
+*
+* @param audio_data   Array of audio samples.
+* @param num_samples  Total number of samples in the audio.
+* @return             Index of the click event if found, -1 otherwise.
+*/
+int detect_click(
+	int16_t *audio_data,
+	const int num_samples,
+	char *char_buffer,
+	ClickEventHandler event_handler)
+{
+	double abs_amplitude_diff = .0;
+	for (int i = 1; i < num_samples; i++) {
+		/* Check if there is a sudden amplitude jump */
+		abs_amplitude_diff = abs(audio_data[i] - audio_data[i - 1]);
+		if (abs_amplitude_diff > CLICK_THRESHOLD_MIN) {
+		 	calculate_timestamp(char_buffer);
+
+			/* Call event handler (if provided) */
+			if (event_handler) {
+				event_handler(char_buffer, i);
+			}
+
+		 	info("%s: Click detected at sample index: %d\n",
+			char_buffer, i);
+		 	return i;
+		}
+	}
+	return -1;
 }
 
 /**
@@ -266,7 +291,11 @@ static int common_resample(struct auresamp_st *st, struct auframe *af)
 		100% guarantee
 		*/
 
-		click_index = detect_click(af->sampv, af->sampc, buffer);
+		click_index = detect_click(
+			af->sampv,
+			af->sampc,
+			buffer,
+			&baresip_click_event_handler);
 		return 0;
 	}
 
@@ -309,7 +338,11 @@ static int common_resample(struct auresamp_st *st, struct auframe *af)
 		af->sampv = st->rsampv;
 	}
 
-	click_index = detect_click(af->sampv, af->sampc, buffer);
+	click_index = detect_click(
+		af->sampv,
+		af->sampc,
+		buffer,
+		&baresip_click_event_handler);
 
 	return err;
 }
