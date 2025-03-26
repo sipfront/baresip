@@ -274,7 +274,7 @@ static int common_resample(struct auresamp_st *st, struct auframe *af)
 		st->rsampv = mem_deref(st->rsampv);
 		st->sampv  = mem_deref(st->sampv);
 
-		/* if you want to get a free segmentation fault.
+		/* nseddiki: if you want to get a free segmentation fault.
 		There are two ways to achieve this fell free to
 
 		1. invoke detect_click(st->rsampv, af->sampc, buffer)
