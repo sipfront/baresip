@@ -75,7 +75,8 @@ int publish_buffered_messages(struct mqtt *mqtt) {
 
 	if (!mqtt->is_connected) {
 		warning(
-		"mqtt: cannot publish queued messages in disconnected state\n");
+		"mqtt: cannot publish queued messages "
+		"in disconnected state\n");
 		return 0;
 	}
 
@@ -133,13 +134,14 @@ int mqtt_publish_message(struct mqtt *mqtt, const char *topic,
 		struct mqtt_event *e;
 
 		warning(
-			"mqtt: trying to publish while not yet connected, queueing\n");
+			"mqtt: trying to publish while not yet "
+			"connected, queueing\n");
 
 		e = mem_zalloc(sizeof(*e), mqtt_event_destructor);
 		if (!e)
 			return ENOMEM;
 		e->event = message;
-        pl_strdup(&e->topic, &topic_pl);
+		pl_strdup(&e->topic, &topic_pl);
 		list_append(&mqtt_event_buffer, &e->le, e);
 		return 0;
 	}

@@ -270,7 +270,8 @@ static int module_close(void)
 		int err = publish_buffered_messages(&s_mqtt);
 		if (err) {
 			warning(
-			"mqtt: publish_buffered_messages failed on shutdown (%m)\n",
+			"mqtt: publish_buffered_messages "
+			"failed on shutdown (%m)\n",
 			err);
 		}
 
