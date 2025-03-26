@@ -541,7 +541,7 @@ int event_encode_dict(struct odict *od, struct ua *ua, enum ua_event ev,
 		err = add_call_stats(od, call);
 		if (err)
 			goto out;
-    }
+	}
 
  out:
 

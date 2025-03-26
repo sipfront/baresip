@@ -84,7 +84,8 @@ struct call {
 	char *user_data;           /**< User data related to the call       */
 	bool evstop;               /**< UA events stopped flag, @deprecated */
 
-	uint64_t ts_invite_sent;   /**< Timestamp of first invite sent to calc stats */
+	/**< Timestamp of first invite sent to calc stats */
+	uint64_t ts_invite_sent;
 	uint64_t stat_pdd;
 };
 
@@ -2327,7 +2328,7 @@ static void sipsess_progr_handler(const struct sip_msg *msg, void *arg)
 {
 	struct call *call = arg;
 	bool send_pdd = false;
-    const uint64_t now = tmr_jiffies();
+	const uint64_t now = tmr_jiffies();
 	bool media;
 
 	MAGIC_CHECK(call);
@@ -2980,7 +2981,7 @@ uint32_t call_linenum(const struct call *call)
 
 uint64_t      call_pdd(struct call *call)
 {
-    return call ? call->stat_pdd : 0;
+	return call ? call->stat_pdd : 0;
 }
 
 

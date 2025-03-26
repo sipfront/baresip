@@ -186,7 +186,7 @@ static int module_init(void)
 	s_mqtt.subtopic = mqttsubscribetopic;
 	s_mqtt.pubtopic = mqttpublishtopic;
 	s_mqtt.pubqos = (int) mqttpublishqos;
-    s_mqtt.subqos = (int) mqttsubscribeqos;
+	s_mqtt.subqos = (int) mqttsubscribeqos;
 
 
 	s_mqtt.mosq = mosquitto_new(mqttclientid, true, &s_mqtt);
@@ -272,7 +272,7 @@ static int module_close(void)
 			warning(
 			"mqtt: publish_buffered_messages failed on shutdown (%m)\n",
 			err);
-        }
+		}
 
 		mosquitto_disconnect(s_mqtt.mosq);
 
