@@ -537,7 +537,8 @@ int event_encode_dict(struct odict *od, struct ua *ua, enum ua_event ev,
 		err = add_rtcp_stats(od, stream_rtcp_stats(strm));
 		if (err)
 			goto out;
-	} else if (ev == UA_EVENT_CALL_STAT) {
+	}
+	else if (ev == UA_EVENT_CALL_STAT) {
 		err = add_call_stats(od, call);
 		if (err)
 			goto out;

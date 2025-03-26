@@ -345,7 +345,8 @@ static void call_destructor(void *arg)
 	if (call_is_peerterm(call)) {
 		info("call ended by peer\n");
 	    bevent_call_emit(UA_EVENT_CALL_ENDED_REMOTE, call, "");
-	} else {
+	}
+	else {
 		info("call ended by local\n");
 		bevent_call_emit(UA_EVENT_CALL_ENDED_LOCAL, call, "");
 	}
