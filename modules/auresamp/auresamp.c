@@ -209,9 +209,11 @@ void baresip_click_event_handler(const char *char_buffer, const int index) {
 /**
 * Detects a click in the audio by identifying a sudden amplitude change.
 *
-* @param audio_data   Array of audio samples.
-* @param num_samples  Total number of samples in the audio.
-* @return             Index of the click event if found, -1 otherwise.
+* @param audio_data   	Array of audio samples.
+* @param num_samples  	Total number of samples in the audio.
+* @param event_handler	Callback function that emits an baresipp event
+*
+* @return Index i of the click event if found, -1 otherwise.
 */
 int detect_click(
 	int16_t *audio_data,
