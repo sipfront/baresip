@@ -924,7 +924,7 @@ enum ua_event {
 
 	UA_EVENT_MAX,
 
-	UA_EVENT_AUDIO_LATENCY_VALUE,
+	UA_EVENT_AUDIO_LATENCY,
 };
 
 

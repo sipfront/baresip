@@ -642,10 +642,12 @@ static void call_dtmf_handler(struct call *call, char key, void *arg)
 		} else if (key == 'D') {
 			bevent_call_emit(UA_EVENT_CALL_DTMF_D, call, key_str);
 		} else if (key == '*') {
-			bevent_call_emit(UA_EVENT_CALL_DTMF_ASTERISK, call, key_str);
+			bevent_call_emit(UA_EVENT_CALL_DTMF_ASTERISK,
+				call, key_str);
 		} else if (key == '#') {
-			bevent_call_emit(UA_EVENT_CALL_DTMF_POUND, call, key_str);
-		}				 
+			bevent_call_emit(UA_EVENT_CALL_DTMF_POUND,
+				call, key_str);
+		}
 	}
 	else {
 		bevent_call_emit(UA_EVENT_CALL_DTMF_END, call, NULL);

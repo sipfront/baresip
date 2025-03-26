@@ -196,9 +196,9 @@ void calculate_timestamp(char *char_buffer) {
  * @param index index where the Click was detected inside the audioframe
  */
 void baresip_click_event_handler(const char *char_buffer, const int index) {
-    /* Notify Baresip */
+	/* Notify Baresip */
 	bevent_app_emit(
-		UA_EVENT_AUDIO_LATENCY_VALUE,
+		UA_EVENT_AUDIO_LATENCY,
 		NULL,
 		"Click detected at %s, at frame index %d\n",
 		char_buffer,
