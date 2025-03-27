@@ -36,9 +36,6 @@ extern "C" {
 #define CLICK_THRESHOLD_MIN 30000
 #endif
 
-// Define function pointer for event callback
-typedef void (*ClickEventHandler)(const char *char_buffer, const int index);
-
 /* forward declarations */
 struct sa;
 struct sdp_media;
@@ -52,7 +49,6 @@ struct vidrect;
 struct vidsz;
 
 void calculate_timestamp(char *char_buffer);
-void baresip_click_event_handler(const char *char_buffer, const int index);
 
 /*
  * Account
@@ -295,11 +291,7 @@ int call_msg_src(const struct call *call, struct sa *sa);
 enum sip_transp call_transp(const struct call *call);
 enum sdp_neg_state call_sdp_neg_state(const struct call *call);
 bool call_sdp_change_allowed(const struct call *call);
-int detect_click(
-	int16_t *audio_data,
-	const int num_samples,
-	char *char_buffer,
-	ClickEventHandler event_handler);
+
 
 /*
  * Custom headers
@@ -906,10 +898,10 @@ enum ua_event {
 	UA_EVENT_VU_TX,
 	UA_EVENT_VU_RX,
 	UA_EVENT_AUDIO_ERROR,
-	UA_EVENT_CALL_LOCAL_SDP,      /**< param: offer or answer */
-	UA_EVENT_CALL_REMOTE_SDP,     /**< param: offer or answer */
-	UA_EVENT_CALL_HOLD,           /**< Call put on-hold by peer          */
-	UA_EVENT_CALL_RESUME,         /**< Call resumed by peer              */
+	UA_EVENT_CALL_LOCAL_SDP,      /**< param: offer or answer 	*/
+	UA_EVENT_CALL_REMOTE_SDP,     /**< param: offer or answer 	*/
+	UA_EVENT_CALL_HOLD,           /**< Call put on-hold by peer */
+	UA_EVENT_CALL_RESUME,         /**< Call resumed by peer     */
 	UA_EVENT_REFER,
 	UA_EVENT_MODULE,
 	UA_EVENT_END_OF_FILE,
@@ -924,9 +916,28 @@ enum ua_event {
 
 	UA_EVENT_MAX,
 
-	UA_EVENT_AUDIO_LATENCY,
+	UA_EVENT_AUDIO_LATENCY_INCOMING, /**< click detection on decoder side*/
+	UA_EVENT_AUDIO_LATENCY_OUTGOING, /**< click detection on encoder side*/
 };
 
+/* Define function pointer for event callback */
+typedef void (*ClickEventHandler)(
+	const char *char_buffer,
+	const int index,
+	enum ua_event event
+);
+
+int detect_click(
+	int16_t *audio_data,
+	const int num_samples,
+	char *char_buffer,
+	ClickEventHandler event_handler,
+	enum ua_event event);
+
+void baresip_click_event_handler(
+	const char *char_buffer,
+	const int index,
+	enum ua_event event);
 
 struct bevent;
 

@@ -195,11 +195,14 @@ void calculate_timestamp(char *char_buffer) {
  *
  * @param index index where the Click was detected inside the audioframe
  */
-void baresip_click_event_handler(const char *char_buffer, const int index) {
+void baresip_click_event_handler(
+	const char *char_buffer,
+	const int index,
+	const enum ua_event event) {
 	/* Notify Baresip */
 	bevent_app_emit(
-		UA_EVENT_AUDIO_LATENCY,
-		"dir", /* was NULL before*/
+		event,
+		NULL,
 		"Click detected at %s, at frame index %d\n",
 		char_buffer,
 		index
@@ -219,7 +222,9 @@ int detect_click(
 	int16_t *audio_data,
 	const int num_samples,
 	char *char_buffer,
-	ClickEventHandler event_handler)
+	ClickEventHandler event_handler,
+	enum ua_event event
+)
 {
 	double abs_amplitude_diff = .0;
 	for (int i = 1; i < num_samples; i++) {
@@ -230,7 +235,7 @@ int detect_click(
 
 			/* Call event handler (if provided) */
 			if (event_handler) {
-				event_handler(char_buffer, i);
+				event_handler(char_buffer, i, event);
 			}
 		 	return i;
 		}
@@ -253,7 +258,10 @@ int detect_click(
  *
  * @return 0 on success, or an error code on failure.
  */
-static int common_resample(struct auresamp_st *st, struct auframe *af)
+static int common_resample(
+	struct auresamp_st *st,
+	struct auframe *af,
+	enum ua_event ev)
 {
 	size_t rsampc;
 	int16_t *sampv;
@@ -297,7 +305,8 @@ static int common_resample(struct auresamp_st *st, struct auframe *af)
 			af->sampv,
 			af->sampc,
 			buffer,
-			&baresip_click_event_handler);
+			&baresip_click_event_handler,
+			ev);
 		return 0;
 	}
 
@@ -344,7 +353,8 @@ static int common_resample(struct auresamp_st *st, struct auframe *af)
 		af->sampv,
 		af->sampc,
 		buffer,
-		&baresip_click_event_handler);
+		&baresip_click_event_handler,
+		ev);
 
 	return err;
 }
@@ -395,7 +405,7 @@ static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
 	if (!st || !af)
 		return EINVAL;
 
-	return common_resample(st, af);
+	return common_resample(st, af, UA_EVENT_AUDIO_LATENCY_OUTGOING);
 }
 
 
@@ -406,7 +416,7 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 	if (!st || !af)
 		return EINVAL;
 
-	return common_resample(st, af);
+	return common_resample(st, af, UA_EVENT_AUDIO_LATENCY_INCOMING);
 }
 
 
