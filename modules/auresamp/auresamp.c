@@ -199,7 +199,7 @@ void baresip_click_event_handler(const char *char_buffer, const int index) {
 	/* Notify Baresip */
 	bevent_app_emit(
 		UA_EVENT_AUDIO_LATENCY,
-		NULL,
+		"dir", /* was NULL before*/
 		"Click detected at %s, at frame index %d\n",
 		char_buffer,
 		index
