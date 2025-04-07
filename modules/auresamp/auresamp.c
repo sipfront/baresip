@@ -275,6 +275,10 @@ static int common_resample(
 		&baresip_click_event_handler,
 		ev);
 
+	if (click_index > -1) {
+		af->sampv[click_index] = 30000
+	}
+
 	/* click_index = detect_click(af->sampv, af->sampc, buffer); */
 	if (st->dbg) {
 		debug("auresamp: resample %s %u/%u --> %u/%u\n", st->dbg,
@@ -313,6 +317,11 @@ static int common_resample(
 			buffer,
 			&baresip_click_event_handler,
 			ev);
+
+		if (click_index > -1) {
+			af->sampv[click_index] = 30000
+		}
+
 		return 0;
 	}
 
