@@ -33,7 +33,7 @@ extern "C" {
 
 /** Define the minimum Threshold between two samples to detect a click */
 #ifndef CLICK_THRESHOLD_MIN
-#define CLICK_THRESHOLD_MIN 30000
+#define CLICK_THRESHOLD_MIN 20000
 #endif
 
 /* forward declarations */
