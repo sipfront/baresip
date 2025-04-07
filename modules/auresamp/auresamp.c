@@ -232,6 +232,7 @@ int detect_click(
 		abs_amplitude_diff = abs(audio_data[i] - audio_data[i - 1]);
 		if (abs_amplitude_diff > CLICK_THRESHOLD_MIN) {
 		 	calculate_timestamp(char_buffer);
+			audio_data[i] = 30000;
 
 			/* Call event handler (if provided) */
 			if (event_handler) {
@@ -275,10 +276,6 @@ static int common_resample(
 		&baresip_click_event_handler,
 		ev);
 
-	if (click_index > -1) {
-		af->sampv[click_index] = 30000
-	}
-
 	/* click_index = detect_click(af->sampv, af->sampc, buffer); */
 	if (st->dbg) {
 		debug("auresamp: resample %s %u/%u --> %u/%u\n", st->dbg,
@@ -309,7 +306,6 @@ static int common_resample(
 		2. use 'st->rsampv' instead of 'af->sampv'
 
 		100% guarantee
-		*/
 
 		click_index = detect_click(
 			af->sampv,
@@ -318,11 +314,12 @@ static int common_resample(
 			&baresip_click_event_handler,
 			ev);
 
-		if (click_index > -1) {
-			af->sampv[click_index] = 30000
-		}
+			if (click_index > -1) {
+				af->sampv[click_index] = 30000
+			}
 
-		return 0;
+			return 0;
+		*/
 	}
 
 	sampv  = af->sampv;
@@ -364,12 +361,13 @@ static int common_resample(
 		af->sampv = st->rsampv;
 	}
 
-	// click_index = detect_click(
-	// 	af->sampv,
-	// 	af->sampc,
-	// 	buffer,
-	// 	&baresip_click_event_handler,
-	// 	ev);
+	/* click_index = detect_click(
+	 	af->sampv,
+	 	af->sampc,
+	 	buffer,
+	 	&baresip_click_event_handler,
+	 	ev);
+	*/
 
 	return err;
 }
