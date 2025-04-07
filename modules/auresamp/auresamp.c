@@ -268,7 +268,13 @@ static int common_resample(
 	int err = 0;
 
 	char buffer[30];
-	int click_index = -1;
+	int click_index = detect_click(
+		af->sampv,
+		af->sampc,
+		buffer,
+		&baresip_click_event_handler,
+		ev);
+
 	/* click_index = detect_click(af->sampv, af->sampc, buffer); */
 	if (st->dbg) {
 		debug("auresamp: resample %s %u/%u --> %u/%u\n", st->dbg,
@@ -349,12 +355,12 @@ static int common_resample(
 		af->sampv = st->rsampv;
 	}
 
-	click_index = detect_click(
-		af->sampv,
-		af->sampc,
-		buffer,
-		&baresip_click_event_handler,
-		ev);
+	// click_index = detect_click(
+	// 	af->sampv,
+	// 	af->sampc,
+	// 	buffer,
+	// 	&baresip_click_event_handler,
+	// 	ev);
 
 	return err;
 }
