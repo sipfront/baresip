@@ -232,7 +232,7 @@ int detect_click(
 		abs_amplitude_diff = abs(audio_data[i] - audio_data[i - 1]);
 		if (abs_amplitude_diff > CLICK_THRESHOLD_MIN) {
 		 	calculate_timestamp(char_buffer);
-			// audio_data[i] = 30000;
+			/* audio_data[i] = 30000 */;
 
 			/* Call event handler (if provided) */
 			if (event_handler) {
