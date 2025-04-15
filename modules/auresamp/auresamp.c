@@ -9,6 +9,7 @@
  #include <rem.h>
  #include <stdlib.h>
  #include <baresip.h>
+ #include <time.h>
  #include <sys/time.h>
 
 
@@ -176,7 +177,7 @@ void calculate_timestamp(char *char_buffer) {
 	gettimeofday(&tv, NULL);
 
 	/* Convert to local time (seconds) */
-	tm_info = localtime(&tv.tv_sec);
+	tm_info = gmtime(&tv.tv_sec);
 
 	/* Format date and time without milliseconds */
 	char temp_buffer[20];
