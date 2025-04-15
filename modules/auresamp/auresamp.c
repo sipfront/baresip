@@ -176,7 +176,7 @@ void calculate_timestamp(char *char_buffer) {
 	/* Get the current time with microseconds */
 	gettimeofday(&tv, NULL);
 
-	/* Convert to local time (seconds) */
+	/* Convert to utc time (seconds) */
 	tm_info = gmtime(&tv.tv_sec);
 
 	/* Format date and time without milliseconds */
