@@ -203,7 +203,7 @@ struct call *bevent_get_call(const struct bevent *event)
 	return NULL;
 }
 
-struct call *bevent_get_tx(const struct bevent *event)
+struct tx *bevent_get_tx(const struct bevent *event)
 {
 	if (!event)
 		return NULL;
@@ -214,7 +214,7 @@ struct call *bevent_get_tx(const struct bevent *event)
 	return NULL;
 }
 
-struct call *bevent_get_ar(const struct bevent *event)
+struct ar *bevent_get_ar(const struct bevent *event)
 {
 	if (!event)
 		return NULL;
