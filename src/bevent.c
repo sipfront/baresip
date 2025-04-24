@@ -388,6 +388,14 @@ static int add_call_stats(struct odict *od_parent, const struct call *call)
 	if (err)
 		goto out;
 
+	err  = odict_entry_add(od, "encoder", ODICT_INT, tx->ac->name);
+	if (err)
+		goto out;
+
+	err  = odict_entry_add(od, "decoder", ODICT_INT, ar->ac->name));
+	if (err)
+		goto out;
+
 	/* add object to the parent */
 	err = odict_entry_add(od_parent, "call_stats", ODICT_OBJECT, od);
 	if (err)
