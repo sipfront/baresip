@@ -21,6 +21,8 @@ enum bevent_class {
 	BEVENT_CLASS_CALL,
 	BEVENT_CLASS_APP,
 	BEVENT_CLASS_SIP,
+	BEVENT_CLASS_TX,
+	BEVENT_CLASS_AR,
 	BEVENT_CLASS_UNDEFINED
 };
 
@@ -197,6 +199,28 @@ struct call *bevent_get_call(const struct bevent *event)
 
 	if (event->ec == BEVENT_CLASS_CALL)
 		return event->u.call;
+
+	return NULL;
+}
+
+struct call *bevent_get_tx(const struct bevent *event)
+{
+	if (!event)
+		return NULL;
+
+	if (event->ec == BEVENT_CLASS_TX)
+		return event->u.tx;
+
+	return NULL;
+}
+
+struct call *bevent_get_ar(const struct bevent *event)
+{
+	if (!event)
+		return NULL;
+
+	if (event->ec == BEVENT_CLASS_AR)
+		return event->u.ar;
 
 	return NULL;
 }
@@ -422,7 +446,7 @@ static int add_codecs(struct odict *od_parent, const struct tx *tx, const struct
 	if (err)
 		goto out;
 
-	err  = odict_entry_add(dec, "decoder", ODICT_STRING, ar->ac->name));
+	err  = odict_entry_add(dec, "decoder", ODICT_STRING, ar->ac->name);
 	if (err)
 		goto out;
 
@@ -436,7 +460,8 @@ static int add_codecs(struct odict *od_parent, const struct tx *tx, const struct
 	if (err)
 		goto out;
  out:
-	mem_deref(od);
+	mem_deref(enc);
+	mem_deref(dec);
 
 	return err;
 }
@@ -455,7 +480,7 @@ static int add_codecs(struct odict *od_parent, const struct tx *tx, const struct
  * @return 0 if success, otherwise errorcode
  */
 int event_encode_dict(struct odict *od, struct ua *ua, enum ua_event ev,
-		      struct call *call, struct tx *tx, struct ar *ar const char *prm)
+		      struct call *call, struct tx *tx, struct ar *ar, const char *prm)
 {
 	const char *event_str = uag_event_str(ev);
 	struct sdp_media *amedia;
@@ -603,6 +628,8 @@ int odict_encode_bevent(struct odict *od, struct bevent *event)
 {
 	struct ua *ua     = bevent_get_ua(event);
 	struct call *call = bevent_get_call(event);
+	struct tx *tx     = bevent_get_tx(event);
+	struct ar *ar     = bevent_get_ar(event);
 	int err;
 
 	if (!od)
