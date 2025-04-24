@@ -37,6 +37,8 @@ struct bevent {
 		struct ua *ua;
 		struct call *call;
 		const struct sip_msg *msg;
+		struct autx *tx;
+		struct audio_recv *ar;
 		void *arg;
 	} u;
 };
@@ -201,7 +203,7 @@ struct call *bevent_get_call(const struct bevent *event)
 	return NULL;
 }
 
-struct tx *bevent_get_tx(const struct bevent *event)
+struct autx *bevent_get_tx(const struct bevent *event)
 {
 	if (!event)
 		return NULL;
@@ -212,7 +214,7 @@ struct tx *bevent_get_tx(const struct bevent *event)
 	return NULL;
 }
 
-struct ar *bevent_get_ar(const struct bevent *event)
+struct audio_recv *bevent_get_ar(const struct bevent *event)
 {
 	if (!event)
 		return NULL;
