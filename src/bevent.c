@@ -37,8 +37,6 @@ struct bevent {
 		struct ua *ua;
 		struct call *call;
 		const struct sip_msg *msg;
-		struct tx *tx;
-		struct ar *ar;
 		void *arg;
 	} u;
 };
@@ -425,7 +423,7 @@ static int add_call_stats(struct odict *od_parent, const struct call *call)
 	return err;
 }
 
-static int add_codecs(struct odict *od_parent, const struct tx *tx, const struct ar *ar)
+static int add_codecs(struct odict *od_parent, const struct autx *tx, const struct audio_recv *ar)
 {
 	struct odict *enc = NULL;
 	struct odict *dec = NULL;
@@ -480,7 +478,7 @@ static int add_codecs(struct odict *od_parent, const struct tx *tx, const struct
  * @return 0 if success, otherwise errorcode
  */
 int event_encode_dict(struct odict *od, struct ua *ua, enum ua_event ev,
-		      struct call *call, struct tx *tx, struct ar *ar, const char *prm)
+		      struct call *call, struct autx *tx, struct audio_recv *ar, const char *prm)
 {
 	const char *event_str = uag_event_str(ev);
 	struct sdp_media *amedia;
@@ -626,10 +624,10 @@ int event_encode_dict(struct odict *od, struct ua *ua, enum ua_event ev,
 
 int odict_encode_bevent(struct odict *od, struct bevent *event)
 {
-	struct ua *ua     = bevent_get_ua(event);
-	struct call *call = bevent_get_call(event);
-	struct tx *tx     = bevent_get_tx(event);
-	struct ar *ar     = bevent_get_ar(event);
+	struct ua *ua         = bevent_get_ua(event);
+	struct call *call     = bevent_get_call(event);
+	struct autx *tx       = bevent_get_tx(event);
+	struct audio_recv *ar = bevent_get_ar(event);
 	int err;
 
 	if (!od)
