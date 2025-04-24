@@ -442,11 +442,11 @@ static int add_codecs(struct odict *od_parent, const struct tx *tx, const struct
 	if (err)
 		goto out;
 
-	err  = odict_entry_add(enc, "encoder", ODICT_STRING, tx->ac->name);
+	err  = odict_entry_add(enc, "encoder", ODICT_STRING, codec_name(tx->ac));
 	if (err)
 		goto out;
 
-	err  = odict_entry_add(dec, "decoder", ODICT_STRING, ar->ac->name);
+	err  = odict_entry_add(dec, "decoder", ODICT_STRING, codec_name(ar->ac));
 	if (err)
 		goto out;
 

@@ -84,3 +84,8 @@ int aucodec_print(struct re_printf *pf, const struct aucodec *ac)
 	return re_hprintf(pf, "%s %uHz/%dch",
 			  ac->name, ac->srate, ac->ch);
 }
+
+*char      codec_name(struct aucodec *aucodec)
+{
+	return aucodec ? aucodec->name : 0;
+}
