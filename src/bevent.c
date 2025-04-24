@@ -35,6 +35,8 @@ struct bevent {
 		struct ua *ua;
 		struct call *call;
 		const struct sip_msg *msg;
+		struct tx *tx;
+		struct ar *ar;
 		void *arg;
 	} u;
 };
@@ -453,7 +455,7 @@ static int add_codecs(struct odict *od_parent, const struct tx *tx, const struct
  * @return 0 if success, otherwise errorcode
  */
 int event_encode_dict(struct odict *od, struct ua *ua, enum ua_event ev,
-		      struct call *call, const char *prm)
+		      struct call *call, struct tx *tx, struct ar *ar const char *prm)
 {
 	const char *event_str = uag_event_str(ev);
 	struct sdp_media *amedia;
@@ -628,7 +630,7 @@ int odict_encode_bevent(struct odict *od, struct bevent *event)
 	}
 
 	/* For now we re-use the deprecated function */
-	return event_encode_dict(od, ua, event->ev, call, event->txt);
+	return event_encode_dict(od, ua, event->ev, call, tx, ar, event->txt);
 }
 
 
