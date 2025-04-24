@@ -425,7 +425,7 @@ static int add_call_stats(struct odict *od_parent, const struct call *call)
 	return err;
 }
 
-static int add_codecs(struct odict *od_parent, struct autx *tx, struct audio_recv *ar)
+static int add_codecs(struct odict *od_parent, struct autx tx, struct audio_recv ar)
 {
 	struct odict *enc = NULL;
 	struct odict *dec = NULL;
