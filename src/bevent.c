@@ -429,6 +429,8 @@ static int add_codecs(struct odict *od_parent, const struct autx *tx, const stru
 {
 	struct odict *enc = NULL;
 	struct odict *dec = NULL;
+	char tx_codec = tx->ac;
+	char ar_codec = ar->ac;
 	int err = 0;
 
 	if (!od_parent || !tx || !ar)
@@ -442,11 +444,11 @@ static int add_codecs(struct odict *od_parent, const struct autx *tx, const stru
 	if (err)
 		goto out;
 
-	err  = odict_entry_add(enc, "encoder", ODICT_STRING, codec_name(tx->ac));
+	err  = odict_entry_add(enc, "encoder", ODICT_STRING, codec_name(tx_codec));
 	if (err)
 		goto out;
 
-	err  = odict_entry_add(dec, "decoder", ODICT_STRING, codec_name(ar->ac));
+	err  = odict_entry_add(dec, "decoder", ODICT_STRING, codec_name(ar_codec));
 	if (err)
 		goto out;
 
