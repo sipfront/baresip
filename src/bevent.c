@@ -388,19 +388,51 @@ static int add_call_stats(struct odict *od_parent, const struct call *call)
 	if (err)
 		goto out;
 
-	err  = odict_entry_add(od, "encoder", ODICT_INT, tx->ac->name);
-	if (err)
-		goto out;
-
-	err  = odict_entry_add(od, "decoder", ODICT_INT, ar->ac->name));
-	if (err)
-		goto out;
-
 	/* add object to the parent */
 	err = odict_entry_add(od_parent, "call_stats", ODICT_OBJECT, od);
 	if (err)
 		goto out;
 
+ out:
+	mem_deref(od);
+
+	return err;
+}
+
+static int add_codecs(struct odict *od_parent, const struct tx *tx, const struct ar *ar)
+{
+	struct odict *enc = NULL;
+	struct odict *dec = NULL;
+	int err = 0;
+
+	if (!od_parent || !tx || !ar)
+		return EINVAL;
+
+	err  = odict_alloc(&enc, 8);
+	if (err)
+		goto out;
+
+	err  = odict_alloc(&dec, 8);
+	if (err)
+		goto out;
+
+	err  = odict_entry_add(enc, "encoder", ODICT_STRING, tx->ac->name);
+	if (err)
+		goto out;
+
+	err  = odict_entry_add(dec, "decoder", ODICT_STRING, ar->ac->name));
+	if (err)
+		goto out;
+
+	/* add object to the parent */
+	err = odict_entry_add(od_parent, "codecs", ODICT_OBJECT, enc);
+	if (err)
+		goto out;
+
+	/* add object to the parent */
+	err = odict_entry_add(od_parent, "codecs", ODICT_OBJECT, dec);
+	if (err)
+		goto out;
  out:
 	mem_deref(od);
 
@@ -549,6 +581,12 @@ int event_encode_dict(struct odict *od, struct ua *ua, enum ua_event ev,
 	}
 	else if (ev == UA_EVENT_CALL_STAT) {
 		err = add_call_stats(od, call);
+		if (err)
+			goto out;
+	}
+
+	else if (ev == UA_EVENT_CALL_RTPESTAB) {
+		err = add_codecs(od, tx, ar);
 		if (err)
 			goto out;
 	}
