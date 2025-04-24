@@ -213,6 +213,8 @@ enum vidmode {
 };
 
 struct call;
+struct autx;
+struct audio_recv;
 
 typedef void (call_event_h)(struct call *call, enum call_event ev,
 			    const char *str, void *arg);
