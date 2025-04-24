@@ -21,8 +21,6 @@ enum bevent_class {
 	BEVENT_CLASS_CALL,
 	BEVENT_CLASS_APP,
 	BEVENT_CLASS_SIP,
-	BEVENT_CLASS_TX,
-	BEVENT_CLASS_AR,
 	BEVENT_CLASS_UNDEFINED
 };
 
@@ -208,7 +206,7 @@ struct autx *bevent_get_tx(const struct bevent *event)
 	if (!event)
 		return NULL;
 
-	if (event->ec == BEVENT_CLASS_TX)
+	if (event->ec == BEVENT_CLASS_CALL)
 		return event->u.tx;
 
 	return NULL;
@@ -219,7 +217,7 @@ struct audio_recv *bevent_get_ar(const struct bevent *event)
 	if (!event)
 		return NULL;
 
-	if (event->ec == BEVENT_CLASS_AR)
+	if (event->ec == BEVENT_CLASS_CALL)
 		return event->u.ar;
 
 	return NULL;
