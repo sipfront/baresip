@@ -42,7 +42,7 @@ int test_bevent_encode(void)
 		err = odict_alloc(&od, 8);
 		ASSERT_EQ(0, err);
 
-		err = event_encode_dict(od, NULL, ev, NULL, NULL);
+		err = event_encode_dict(od, NULL, ev, NULL, NULL, NULL, NULL);
 		ASSERT_EQ(0, err);
 
 		/* verify that something was added */

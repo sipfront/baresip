@@ -834,3 +834,8 @@ out:
 	mem_deref(mb);
 	return err;
 }
+
+struct aucodec *get_aurecv_ac(const struct audio_recv *rx)
+{
+	return rx->ac;
+}

@@ -423,14 +423,15 @@ static int add_call_stats(struct odict *od_parent, const struct call *call)
 	return err;
 }
 
-static int add_codecs(struct odict *od_parent, 
-					  struct autx *tx, 
+static int add_codecs(struct odict *od_parent,
+					  struct autx *tx,
 					  struct audio_recv *ar)
 {
 	struct odict *enc = NULL;
 	struct odict *dec = NULL;
-	char tx_codec = tx->ac;
-	char ar_codec = ar->ac;
+	struct aucodec *tx_codec = get_autx_ac(tx);
+	struct aucodec *ar_codec = get_aurecv_ac(ar);
+
 	int err = 0;
 
 	if (!od_parent || !tx || !ar)
@@ -444,12 +445,12 @@ static int add_codecs(struct odict *od_parent,
 	if (err)
 		goto out;
 
-	err  = odict_entry_add(enc, "encoder", ODICT_STRING, 
+	err  = odict_entry_add(enc, "encoder", ODICT_STRING,
 							codec_name(tx_codec));
 	if (err)
 		goto out;
 
-	err  = odict_entry_add(dec, "decoder", ODICT_STRING, 
+	err  = odict_entry_add(dec, "decoder", ODICT_STRING,
 							codec_name(ar_codec));
 	if (err)
 		goto out;
@@ -483,9 +484,14 @@ static int add_codecs(struct odict *od_parent,
  *
  * @return 0 if success, otherwise errorcode
  */
-int event_encode_dict(struct odict *od, struct ua *ua, enum ua_event ev,
-		      struct call *call, struct autx *tx, struct audio_recv *ar, 
-			  const char *prm)
+int event_encode_dict(
+	struct odict *od,
+	struct ua *ua,
+	enum ua_event ev,
+	struct call *call,
+	struct autx *tx,
+	struct audio_recv *ar,
+	const char *prm)
 {
 	const char *event_str = uag_event_str(ev);
 	struct sdp_media *amedia;

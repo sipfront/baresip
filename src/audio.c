@@ -1950,3 +1950,8 @@ struct config_audio *audio_config(struct audio *au)
 {
 	return au ? &au->cfg : NULL;
 }
+
+struct aucodec *get_autx_ac(const struct autx *tx)
+{
+	return tx->ac;
+}

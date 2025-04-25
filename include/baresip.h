@@ -214,7 +214,10 @@ enum vidmode {
 
 struct call;
 struct autx;
+struct aucodec *get_autx_ac(const struct autx *tx);
+
 struct audio_recv;
+struct aucodec *get_aurecv_ac(const struct audio_recv *rx);
 
 typedef void (call_event_h)(struct call *call, enum call_event ev,
 			    const char *str, void *arg);
@@ -942,7 +945,8 @@ void baresip_click_event_handler(
 	enum ua_event event);
 
 struct bevent;
-
+struct autx *bevent_get_tx(const struct bevent *event);
+struct audio_recv *bevent_get_ar(const struct bevent *event);
 
 /** SIP auto answer method */
 enum answer_method {
@@ -1299,6 +1303,7 @@ const struct aucodec *aucodec_find(const struct list *aucodecl,
 				   const char *name, uint32_t srate,
 				   uint8_t ch);
 
+char *codec_name(struct aucodec *aucodec);
 
 /*
  * Video Codec
@@ -1731,8 +1736,14 @@ void module_app_unload(void);
  * Generic event
  */
 
-int event_encode_dict(struct odict *od, struct ua *ua, enum ua_event ev,
-		      struct call *call, const char *prm);
+int event_encode_dict(
+	struct odict *od,
+	struct ua *ua,
+	enum ua_event ev,
+	struct call *call,
+	struct autx *tx,
+	struct audio_recv *ar,
+	const char *prm);
 int odict_encode_bevent(struct odict *od, struct bevent *event);
 int event_add_au_jb_stat(struct odict *od_parent, const struct call *call);
 int  uag_event_register(ua_event_h *eh, void *arg);
