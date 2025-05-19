@@ -288,7 +288,15 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 	if (!st || !af)
 		return EINVAL;
 
-	return common_resample(st, af);
+	info(
+		"decode before resample\noutput-sample rate: %d\noutput-channel count: %d\ninput-sample rate: %d\ninput-channel count: %d\n",
+		st->resamp.orate,
+		st->resamp.och,
+		st->resamp.irate,
+		st->resamp.ich
+	);
+
+	return common_resample(st, af, UA_EVENT_AUDIO_LATENCY_INCOMING);
 }
 
 
