@@ -269,13 +269,22 @@ static int common_resample(
 	int16_t *sampv;
 	int err = 0;
 
-	char buffer[30];
-	int click_index = detect_click(
-		af->sampv,
-		af->sampc,
-		buffer,
-		&baresip_click_event_handler,
-		ev);
+	// info(
+	// 	"side: %s\noutput-sample rate: %d\noutput-channel count: %d\n\ninput-sample rate: %d\ninput-channel count: %d\n",
+	// 	st->dbg,
+	// 	st->resamp.orate,
+	// 	st->resamp.och,
+	// 	st->resamp.irate,
+	// 	st->resamp.ich
+	// );
+
+	//char buffer[30];
+	// int click_index = detect_click(
+	// 	af->sampv,
+	// 	af->sampc,
+	// 	buffer,
+	// 	&baresip_click_event_handler,
+	// 	ev);
 
 	/* click_index = detect_click(af->sampv, af->sampc, buffer); */
 	if (st->dbg) {
@@ -344,13 +353,6 @@ static int common_resample(
 		return err;
 
 	rsampc = st->rsampsz / 2;
-	info(
-		"output-sample rate: %d\noutput-channel count: %d\n\ninput-sample rate: %d\n,input-channel count: %d\n",
-		st->resamp.orate,
-		st->resamp.och,
-		st->resamp.irate,
-		st->resamp.ich
-	);
 	err = auresamp(&st->resamp, st->rsampv, &rsampc, sampv, af->sampc);
 	if (err) {
 		warning("resample: auresamp error (%m)\n", err);
@@ -426,6 +428,14 @@ static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
 	if (!st || !af)
 		return EINVAL;
 
+	info(
+		"encode before resample\noutput-sample rate: %d\noutput-channel count: %d\ninput-sample rate: %d\ninput-channel count: %d\n\n",
+		st->resamp.orate,
+		st->resamp.och,
+		st->resamp.irate,
+		st->resamp.ich
+	);
+
 	return common_resample(st, af, UA_EVENT_AUDIO_LATENCY_OUTGOING);
 }
 
@@ -436,6 +446,14 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 
 	if (!st || !af)
 		return EINVAL;
+
+	info(
+		"decode before resample\noutput-sample rate: %d\noutput-channel count: %d\ninput-sample rate: %d\ninput-channel count: %d\n",
+		st->resamp.orate,
+		st->resamp.och,
+		st->resamp.irate,
+		st->resamp.ich
+	);
 
 	return common_resample(st, af, UA_EVENT_AUDIO_LATENCY_INCOMING);
 }
