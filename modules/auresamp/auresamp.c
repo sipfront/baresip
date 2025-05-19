@@ -344,6 +344,13 @@ static int common_resample(
 		return err;
 
 	rsampc = st->rsampsz / 2;
+	info(
+		"output-sample rate: %d\noutput-channel count: %d\n\ninput-sample rate: %d\n,input-channel count: %d\n",
+		st->resamp.orate,
+		st->resamp.och,
+		st->resamp.irate,
+		st->resamp.ich
+	);
 	err = auresamp(&st->resamp, st->rsampv, &rsampc, sampv, af->sampc);
 	if (err) {
 		warning("resample: auresamp error (%m)\n", err);
