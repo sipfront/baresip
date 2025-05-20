@@ -96,6 +96,7 @@ static int sampv_alloc(struct auresamp_st *st, struct auframe *af)
 static int rsampv_check_size(struct auresamp_st *st, struct auframe *af)
 {
 	uint64_t ptime;
+	uint64_t ptime;
 	size_t psize;
 
 	ptime = af->sampc * 1000 / af->srate;
@@ -185,6 +186,7 @@ static int common_resample(struct auresamp_st *st, struct auframe *af)
 		st->rsampsz = 0;
 		st->rsampv = mem_deref(st->rsampv);
 		st->sampv  = mem_deref(st->sampv);
+		return 0;
 		return 0;
 	}
 
