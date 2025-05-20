@@ -382,6 +382,10 @@ static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
 	if (!st || !af)
 		return EINVAL;
 
+	info("encoding stage: auresamp struct %p\n", st);
+	info("encoding stage: auresamp struct audio data: %p\n", (void *)st->sampv);
+	info("encoding stage: auresamp struct resamp. audio data: %p\n", st->rsampv);
+	info("encoding stage: auresamp size resamp buffer: %p\n", st->rsampsz);
 	info(
 		"encode before resample\noutput-sample rate: %d\noutput-channel count: %d\ninput-sample rate: %d\ninput-channel count: %d\n\n",
 		st->resamp.orate,
@@ -401,6 +405,10 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 	if (!st || !af)
 		return EINVAL;
 
+	info("decoding stage: auresamp struct %p\n", st);
+	info("decoding stage: auresamp struct audio data: %p\n", st->sampv);
+	info("decoding stage: auresamp struct resamp. audio data: %p\n", st->rsampv);
+	info("decoding stage: auresamp size resamp buffer: %p\n", st->rsampsz);
 	info(
 		"decode before resample\noutput-sample rate: %d\noutput-channel count: %d\ninput-sample rate: %d\ninput-channel count: %d\n",
 		st->resamp.orate,
