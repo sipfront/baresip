@@ -7,8 +7,8 @@
 
  #include <re.h>
  #include <rem.h>
- #include <stdlib.h>
  #include <baresip.h>
+ #include <stdlib.h>
  #include <time.h>
  #include <sys/time.h>
 
@@ -95,7 +95,7 @@ static int sampv_alloc(struct auresamp_st *st, struct auframe *af)
 
 static int rsampv_check_size(struct auresamp_st *st, struct auframe *af)
 {
-	size_t ptime;
+	uint64_t ptime;
 	size_t psize;
 
 	ptime = af->sampc * 1000 / af->srate;
@@ -269,24 +269,15 @@ static int common_resample(
 	int16_t *sampv;
 	int err = 0;
 
-	// info(
-	// 	"side: %s\noutput-sample rate: %d\noutput-channel count: %d\n\ninput-sample rate: %d\ninput-channel count: %d\n",
-	// 	st->dbg,
-	// 	st->resamp.orate,
-	// 	st->resamp.och,
-	// 	st->resamp.irate,
-	// 	st->resamp.ich
-	// );
 
-	//char buffer[30];
-	// int click_index = detect_click(
-	// 	af->sampv,
-	// 	af->sampc,
-	// 	buffer,
-	// 	&baresip_click_event_handler,
-	// 	ev);
+	char buffer[30];
+	int click_index = detect_click(
+		af->sampv,
+		af->sampc,
+		buffer,
+		&baresip_click_event_handler,
+		ev);
 
-	/* click_index = detect_click(af->sampv, af->sampc, buffer); */
 	if (st->dbg) {
 		debug("auresamp: resample %s %u/%u --> %u/%u\n", st->dbg,
 		      af->srate, af->ch, st->oprm.srate, st->oprm.ch);
@@ -300,36 +291,7 @@ static int common_resample(
 		st->rsampsz = 0;
 		st->rsampv = mem_deref(st->rsampv);
 		st->sampv  = mem_deref(st->sampv);
-
-		/* nseddiki: if you want to get a free segmentation fault.
-		There are two ways to achieve this feel free to
-
-		1. invoke detect_click(st->rsampv, af->sampc, buffer)
-		here after the memory was cleared!
-
-		mem_deref() does the following:
-		- Dereference a reference-counted memory object.
-		- When the reference count is zero, the destroy
-		handler will be called (if present) and the memory
-		will be freed
-
-		2. use 'st->rsampv' instead of 'af->sampv'
-
-		100% guarantee
-
-		click_index = detect_click(
-			af->sampv,
-			af->sampc,
-			buffer,
-			&baresip_click_event_handler,
-			ev);
-
-			if (click_index > -1) {
-				af->sampv[click_index] = 30000
-			}
-
-			return 0;
-		*/
+		return 0;
 	}
 
 	sampv  = af->sampv;
@@ -370,14 +332,6 @@ static int common_resample(
 	else {
 		af->sampv = st->rsampv;
 	}
-
-	/* click_index = detect_click(
-	 	af->sampv,
-	 	af->sampc,
-	 	buffer,
-	 	&baresip_click_event_handler,
-	 	ev);
-	*/
 
 	return err;
 }
