@@ -382,6 +382,7 @@ static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
 	if (!st || !af)
 		return EINVAL;
 
+	/*
 	info("encoding stage: auresamp struct %p\n", st);
 	info("encoding stage: auresamp struct audio data: %p\n", (void *)st->sampv);
 	info("encoding stage: auresamp struct resamp. audio data: %p\n", st->rsampv);
@@ -393,6 +394,7 @@ static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
 		st->resamp.irate,
 		st->resamp.ich
 	);
+	*/
 
 	return common_resample(st, af, UA_EVENT_AUDIO_LATENCY_OUTGOING);
 }
@@ -405,6 +407,7 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 	if (!st || !af)
 		return EINVAL;
 
+	/*
 	info("decoding stage: auresamp struct %p\n", st);
 	info("decoding stage: auresamp struct audio data: %p\n", st->sampv);
 	info("decoding stage: auresamp struct resamp. audio data: %p\n", st->rsampv);
@@ -416,6 +419,7 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 		st->resamp.irate,
 		st->resamp.ich
 	);
+	*/
 
 	return common_resample(st, af, UA_EVENT_AUDIO_LATENCY_INCOMING);
 }
