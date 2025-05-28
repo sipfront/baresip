@@ -242,7 +242,7 @@ bool call_early_video_available(const struct call *call);
 bool call_refresh_allowed(const struct call *call);
 bool call_ack_pending(const struct call *call);
 int  call_transfer(struct call *call, const char *uri);
-int  call_replace_transfer(struct call *target_call, struct call *source_call);
+int  call_replace_transfer(struct call *call, struct call *source_call);
 int  call_status(struct re_printf *pf, const struct call *call);
 int  call_debug(struct re_printf *pf, const struct call *call);
 int  call_notify_sipfrag(struct call *call, uint16_t scode,
