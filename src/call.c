@@ -2834,8 +2834,10 @@ int call_replace_transfer(struct call *call, struct call *source_call)
 			      auth_handler, call->acc, true,
 			      sipsub_notify_handler, sipsub_close_handler,
                               call,
-			 "Refer-To: <%s?Replaces=%s>\r\nReferred-by: %s\r\n",
-                              source_call->peer_uri, source_call->id,
+			 "Refer-To: <%s?Replaces=%s;from-tag=%s;to-tag=%s>\r\nReferred-by: %s\r\n",
+			 source_call->peer_uri, source_call->id,
+			 dialog_ltag(sipsess_dialog(source_call->sess)),
+			 dialog_rtag(sipsess_dialog(source_call->sess)),
 		              account_aor(ua_account(call->ua)));
 	if (err) {
 		warning("call: sipevent_drefer: %m\n", err);
