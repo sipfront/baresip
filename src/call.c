@@ -2829,16 +2829,26 @@ int call_replace_transfer(struct call *call, struct call *source_call)
 
 	call->sub = mem_deref(call->sub);
 
+	char replaces_raw[512];
+	char replaces_encoded[1024];
+
+	re_snprintf(replaces_raw, sizeof(replaces_raw),
+				"%s;to-tag=%s;from-tag=%s",
+				source_call->id,
+				dialog_ltag(sipsess_dialog(source_call->sess)),
+				dialog_rtag(sipsess_dialog(source_call->sess)));
+
+	re_uri_encode(replaces_encoded, sizeof(replaces_encoded), replaces_raw);
+
 	err = sipevent_drefer(&call->sub, uag_sipevent_sock(),
-			      sipsess_dialog(call->sess), ua_cuser(call->ua),
-			      auth_handler, call->acc, true,
-			      sipsub_notify_handler, sipsub_close_handler,
-                              call,
-			 "Refer-To: <%s?Replaces=%s;from-tag=%s;to-tag=%s>\r\nReferred-by: %s\r\n",
-			 source_call->peer_uri, source_call->id,
-			 dialog_ltag(sipsess_dialog(source_call->sess)),
-			 dialog_rtag(sipsess_dialog(source_call->sess)),
-		              account_aor(ua_account(call->ua)));
+		sipsess_dialog(call->sess), ua_cuser(call->ua),
+		auth_handler, call->acc, true,
+		sipsub_notify_handler, sipsub_close_handler,
+		call,
+		"Refer-To: <%s?Replaces=%s>\r\nReferred-By: %s\r\n",
+		source_call->peer_uri, replaces_encoded,
+		account_aor(ua_account(call->ua)));
+
 	if (err) {
 		warning("call: sipevent_drefer: %m\n", err);
 	}
