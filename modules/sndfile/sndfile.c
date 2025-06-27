@@ -129,7 +129,7 @@ static int filename_alloc(char **filenamep,
 			  "%s/dump-%s=>%s-%H-%s.wav",
 			  file_path,
 			  cname, peer,
-			  timestamp_print_usec, tv, enc ? "enc" : "dec");
+			  timestamp_print_usec, &tv, enc ? "enc" : "dec");
 	if (err)
 		return err;
 
