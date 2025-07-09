@@ -52,6 +52,7 @@ set(MODULES
   mwi
   natpmp
   netroam
+  openai_rt
   opensles
   opus
   opus_multistream
