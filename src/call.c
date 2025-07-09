@@ -2265,7 +2265,7 @@ int call_accept(struct call *call, struct sipsess_sock *sess_sock,
 
 		// First token: callid
 		rcallid = strtok(rid, ";");
-			
+
 		debug("call: replaces: %s\n", rcallid);
 		rcall = call_find_id(ua_calls(call->ua), rcallid);
 		//TODO: take tags into consideration
@@ -2276,11 +2276,11 @@ int call_accept(struct call *call, struct sipsess_sock *sess_sock,
 
 			// Reply with 481 "Call/Transaction Does Not Exist"
 			sip_treply(NULL, uag_sip(), msg, 481,
-				    "Call/Transaction Does Not Exist");
-			
+						"Call/Transaction Does Not Exist");
+
 			call_event_handler(call, CALL_EVENT_CLOSED,
-                                           "Unknown Call-ID");
-                        return 0;
+								"Unknown Call-ID");
+			return 0;
 		}
 
 		call_stream_stop(rcall);
