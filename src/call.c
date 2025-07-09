@@ -2262,24 +2262,21 @@ int call_accept(struct call *call, struct sipsess_sock *sess_sock,
 			return err;
 
 		char *rcallid;
-
-		// First token: callid
 		rcallid = strtok(rid, ";");
 
 		debug("call: replaces: %s\n", rcallid);
 		rcall = call_find_id(ua_calls(call->ua), rcallid);
-		//TODO: take tags into consideration
+		/* TODO: take tags into consideration */
 
 		if (!rcall) {
 			warning("call: no call found for replaces: %s\n", rid);
 			mem_deref(rid);
 
-			// Reply with 481 "Call/Transaction Does Not Exist"
 			sip_treply(NULL, uag_sip(), msg, 481,
-						"Call/Transaction Does Not Exist");
+				"Call/Transaction Does Not Exist");
 
 			call_event_handler(call, CALL_EVENT_CLOSED,
-								"Unknown Call-ID");
+						"Unknown Call-ID");
 			return 0;
 		}
 
