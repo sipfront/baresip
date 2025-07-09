@@ -2261,11 +2261,31 @@ int call_accept(struct call *call, struct sipsess_sock *sess_sock,
 		if (err)
 			return err;
 
-		rcall = call_find_id(ua_calls(call->ua), rid);
-		call_stream_stop(rcall);
-		call_event_handler(rcall, CALL_EVENT_CLOSED,
-			"%s replaced", rid);
-		mem_deref(rid);
+		char *rcallid;
+
+		// First token: callid
+		rcallid = strtok(rid, ";");
+		if (rcallid) {
+			debug("call: replaces: %s\n", rcallid);
+			rcall = call_find_id(ua_calls(call->ua), rcallid);
+			//TODO: take tags into consideration
+
+			if (!rcall) {
+				warning("call: no call found for replaces: %s\n", rid);
+				mem_deref(rid);
+
+				// Reply with 481 "Transaction Does Not Exist"
+				// sip_treply(NULL, uag_sip(), msg, 481,
+				//	    "Transaction Does Not Exist");
+
+				return ENOENT;
+			}
+
+			call_stream_stop(rcall);
+			call_event_handler(rcall, CALL_EVENT_CLOSED,
+				"%s replaced", rid);
+			mem_deref(rid);
+		}
 	}
 
 	err = sipsess_accept(&call->sess, sess_sock, msg, 180, "Ringing",
