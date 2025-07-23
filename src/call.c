@@ -1857,6 +1857,27 @@ static int sipsess_answer_handler(const struct sip_msg *msg, void *arg)
 		return err;
 	}
 
+
+
+
+
+
+		const struct sdp_media *m =
+			stream_sdpmedia(audio_strm(call->audio));
+		enum sdp_dir dir = sdp_media_dir(m);
+
+		debug("**************call: audio media direction: %s (%d)\n",
+			sdp_dir_name(dir), dir);
+
+		if (dir == SDP_SENDONLY || dir == SDP_INACTIVE || dir == SDP_RECVONLY) {
+			bevent_call_emit(UA_EVENT_CALL_HOLD, call, "");
+		} else if (dir == SDP_SENDRECV) {
+			//check if it was alrady on hold otherwise send RESUME event
+			if (call->on_hold) {
+				bevent_call_emit(UA_EVENT_CALL_RESUME, call, "");
+			}
+		}
+
 	/* note: before update_media */
 	if (call->config_avt.bundle) {
 

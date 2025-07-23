@@ -8,6 +8,33 @@
 #include <baresip.h>
 #include "menu.h"
 
+static void att_xfer_event_handler(enum ua_event *event, void *arg)
+{
+    struct menu *menu = menu_get();
+
+    if (!menu->xfer_call || !menu->xfer_targ)
+        return;
+
+    if (event == UA_EVENT_CALL_HOLD) {
+        info("att_xfer: Call is on hold, doing attended transfer\n");
+
+        int err = call_replace_transfer(menu->xfer_call, menu->xfer_targ);
+
+        if (err) {
+            warning("att_xfer: call_replace_transfer failed (%m)\n", err);
+        }
+
+        menu->xfer_call = NULL;
+        menu->xfer_targ = NULL;
+
+        tmr_cancel(&menu->xfer_tmr);
+
+        /* Unregister UA event handler */
+        bevent_unregister(att_xfer_event_handler);
+    }
+}
+
+
 
 static int set_audio_bitrate(struct re_printf *pf, void *arg)
 {
@@ -269,35 +296,54 @@ static int attended_xfer(struct re_printf *pf, void *arg)
 
 }
 
-
-static int exec_att_xfer(struct re_printf *pf, void *arg)
+static void xfer_timeout_handler(void *arg)
 {
-	struct menu *menu = menu_get();
-	const struct cmd_arg *carg = arg;
-	struct ua *ua = carg->data ? carg->data : menu_uacur();
-	int err = 0;
+    struct menu *menu = menu_get();
+    warning("att_xfer: hold wait timed out\n");
+    menu->xfer_call = NULL;
+    menu->xfer_targ = NULL;
 
-	(void) pf;
-
-	if (menu->xfer_call) {
-		err = call_hold(ua_call(ua), true);
-		if (err)
-			goto out;
-
-		err = call_replace_transfer(menu->xfer_call, ua_call(ua));
-	}
-	else {
-		info ("menu: no pending attended call transfer available\n");
-		err = ECANCELED;
-	}
-
- out:
-	menu->xfer_call = NULL;
-	menu->xfer_targ = NULL;
-
-	return err;
 }
 
+
+static int exec_att_xfer(struct re_printf *pf, void *arg)
+ {
+     struct menu *menu = menu_get();
+     const struct cmd_arg *carg = arg;
+     struct ua *ua = carg->data ? carg->data : menu_uacur();
+     int err = 0;
+
+     (void) pf;
+
+     if (menu->xfer_call) {
+         err = call_hold(ua_call(ua), true);
+         if (err)
+             goto out;
+
+         info("Putting call on hold; transfer will run when on hold\n");
+
+         /* Save target call for event handler */
+         menu->xfer_targ = ua_call(ua);
+
+	bevent_register(att_xfer_event_handler, NULL);
+
+         /* Start timeout for safety */
+         tmr_start(&menu->xfer_tmr, 30000, xfer_timeout_handler, NULL);
+
+         /* Do NOT call call_replace_transfer here! */
+         return 0;
+     }
+     else {
+         info("menu: no pending attended transfer available\n");
+         err = ECANCELED;
+     }
+
+ out:
+     menu->xfer_call = NULL;
+     menu->xfer_targ = NULL;
+
+     return err;
+ }
 
 static int abort_att_xfer(struct re_printf *pf, void *arg)
 {

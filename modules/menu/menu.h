@@ -18,6 +18,7 @@ struct menu{
 	struct mbuf *dialbuf;         /**< Buffer for dialled number      */
 	struct call *xfer_call;       /**< Attended transfer call         */
 	struct call *xfer_targ;       /**< Transfer target call           */
+	struct tmr  xfer_tmr;
 	struct call *curcall;         /**< Call-id of current call        */
 	bool ringback_disabled;       /**< no ringback on sip 180 respons */
 	bool ringback;                /**< Ringback played currently      */
