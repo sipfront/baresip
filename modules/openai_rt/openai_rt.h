@@ -209,16 +209,4 @@ struct audio_event *audio_get_next_event(void);
 struct audio_frame *audio_get_next_write_frame(void);
 void audio_free_frame(struct audio_frame *frame);
 
-/* Dump functions */
-int dump_init(void);
-void dump_close(void);
-void dump_audio(const int16_t *samples, size_t sample_count);
-void dump_audio_orig(const int16_t *samples, size_t sample_count,
-                     uint32_t srate, uint8_t channels);
-void dump_audio_g711u(const uint8_t *g711u_samples, size_t sample_count);
-void dump_audio_g711a(const uint8_t *g711a_samples, size_t sample_count);
-void dump_audio_response(const int16_t *samples, size_t sample_count);
-void dump_enable(bool enable);
-int dump_new_file(void);
-
 #endif /* OPENAI_RT_H */

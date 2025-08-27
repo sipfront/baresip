@@ -14,11 +14,11 @@ static void event_handler(struct ua *ua, enum ua_event ev,
 	(void)arg;
 
 	if (!call) {
-		DEBUG_INFO("No call object in event %d\n", ev);
+		//DEBUG_INFO("No call object in event %d\n", ev);
 		return;
 	}
 
-	DEBUG_INFO("UA event: %d for call %p\n", ev, call);
+	//DEBUG_INFO("UA event: %d for call %p\n", ev, call);
 
 	switch (ev) {
 	case UA_EVENT_CALL_ESTABLISHED:
@@ -62,7 +62,7 @@ static void event_handler(struct ua *ua, enum ua_event ev,
 
 	default:
 		/* Log other events for debugging */
-		DEBUG_INFO("Unhandled UA event: %d\n", ev);
+		//DEBUG_INFO("Unhandled UA event: %d\n", ev);
 		break;
 	}
 }

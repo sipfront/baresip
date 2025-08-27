@@ -30,52 +30,6 @@
      { NULL, NULL, 0, 0, 0, NULL, 0 }  /* Terminator */
  };
  
- /* Decode base64 audio from outgoing JSON and dump to WAV (24 kHz PCM16) */
- static void maybe_dump_outgoing_audio_json(const char *json, size_t len)
- {
-     if (!json || !len) return;
- 
-     struct json_object *root = json_tokener_parse(json);
-     if (!root) return;
- 
-     struct json_object *type_obj = NULL;
-     if (!json_object_object_get_ex(root, "type", &type_obj)) {
-         json_object_put(root);
-         return;
-     }
- 
-     const char *type = json_object_get_string(type_obj);
-     if (!type || strcmp(type, "input_audio_buffer.append") != 0) {
-         json_object_put(root);
-         return;
-     }
- 
-     struct json_object *audio_obj = NULL;
-     if (!json_object_object_get_ex(root, "audio", &audio_obj)) {
-         json_object_put(root);
-         return;
-     }
- 
-     const char *b64 = json_object_get_string(audio_obj);
-     if (!b64 || !*b64) {
-         json_object_put(root);
-         return;
-     }
- 
-     /* Use utils.c base64 decoder; dump as PCM16 LE @ 24 kHz */
-     uint8_t *decoded = NULL;
-     size_t nbytes = decode_audio_base64(b64, &decoded);
-     if (decoded && nbytes >= 2) {
-         size_t nsamp = nbytes / 2;
-         // dump_audio((const int16_t *)decoded, nsamp);
-         DEBUG_INFO("openai_rt: dumped %zu bytes (%zu samples) of OUTGOING PCM16 to dumper\n",
-                    nbytes, nsamp);
-     }
- 
-     if (decoded) mem_deref(decoded);
-     json_object_put(root);
- }
- 
  /* Message destructor */
  static void ws_message_destructor(void *arg)
  {
@@ -110,9 +64,7 @@
          return;
      }
  
-     DEBUG_INFO("Sending message to OpenAI: %s\n", msg->data + LWS_PRE);
- 
-     maybe_dump_outgoing_audio_json((const char *)(msg->data + LWS_PRE), msg->len);
+     //DEBUG_INFO("Sending message to OpenAI: %s\n", msg->data + LWS_PRE);
  
      /* Send the message */
      int written = lws_write(g_oairt.ws_client, msg->data + LWS_PRE, msg->len, LWS_WRITE_TEXT);
@@ -167,9 +119,7 @@
              info("openai_rt: session.updated received; input_audio_format now active\n");
  
              /* Flush any accumulated audio now that session is ready */
- #ifdef BARESIP_MODULE
              audio_flush_accumulated();
- #endif
          }
      }
      json_object_put(root);
@@ -211,7 +161,6 @@ static void handle_openai_audio_delta(const char *json_str)
 
     if (decoded && nbytes >= 2) {
 
-#ifdef BARESIP_MODULE
         const int16_t *pcm24 = (const int16_t *)decoded;
         size_t nsamp24 = nbytes / 2;
 
@@ -233,9 +182,9 @@ static void handle_openai_audio_delta(const char *json_str)
                     if (err) {
                         warning("openai_rt: write_to_injection_buffer failed: %m\n", err);
                     }
-                    else {
-                        DEBUG_INFO("Queued %zu samples to injection ring (8kHz)\n", produced8);
-                    }
+                    //else {
+                    //    DEBUG_INFO("Queued %zu samples to injection ring (8kHz)\n", produced8);
+                    //}
                 }
                 mem_deref(buf8);
             }
@@ -243,7 +192,7 @@ static void handle_openai_audio_delta(const char *json_str)
         else {
             DEBUG_INFO("Call not active, skipping audio injection\n");
         }
-#endif
+
     }
 
     if (decoded) mem_deref(decoded);
@@ -284,7 +233,7 @@ static void handle_openai_audio_delta(const char *json_str)
  
      case LWS_CALLBACK_CLIENT_RECEIVE:
          //info("openai_rt: WebSocket received %zu bytes\n", len);
-         DEBUG_INFO("Received message from OpenAI: %s\n", (const char *)in);
+         //DEBUG_INFO("Received message from OpenAI: %s\n", (const char *)in);
  
          if (len > 0 && g_oairt.ws_state == WS_CONNECTED) {
              queue_message_from_openai((const uint8_t *)in, len);
@@ -350,7 +299,7 @@ static void handle_openai_audio_delta(const char *json_str)
          break;
  
      case LWS_CALLBACK_EVENT_WAIT_CANCELLED:
-         info("openai_rt: Event wait cancelled\n");
+         //info("openai_rt: Event wait cancelled\n");
          break;
  
      case LWS_CALLBACK_HTTP:
@@ -587,7 +536,7 @@ static void handle_openai_audio_delta(const char *json_str)
     msg->arg = arg;
  
     pthread_mutex_lock(&g_oairt.ws_mutex);
-    DEBUG_INFO("Queueing message to OpenAI: %s\n", json_msg);
+    //DEBUG_INFO("Queueing message to OpenAI: %s\n", json_msg);
     list_append(&g_oairt.to_openai_queue, &msg->le, msg);
     pthread_mutex_unlock(&g_oairt.ws_mutex);
  
@@ -670,7 +619,6 @@ static void handle_openai_audio_delta(const char *json_str)
          }
      }
  
-     uint64_t last_log = 0;
      uint64_t last_connecting_log = 0;
      uint64_t connection_start_time = 0;
  
@@ -702,12 +650,7 @@ static void handle_openai_audio_delta(const char *json_str)
              continue;
          }
  
-         /* Periodic status log */
          uint64_t now = lws_now_usecs();
-         if (now - last_log > 5000000) { /* 5s */
-             info("openai_rt: WebSocket thread running, status: %s\n", websocket_status_string());
-             last_log = now;
-         }
  
          /* Log when actively connecting; manage a simple timeout */
          if (g_oairt.ws_state == WS_CONNECTING) {
@@ -742,7 +685,6 @@ static void handle_openai_audio_delta(const char *json_str)
          }
  
          /* Process events from event queue */
- #ifdef BARESIP_MODULE
          struct audio_event *event = audio_get_next_event();
          if (event) {
              switch (event->type) {
@@ -770,7 +712,7 @@ static void handle_openai_audio_delta(const char *json_str)
              }
              mem_deref(event);
          }
- #endif
+
  
          /* Gentle pacing; a shorter sleep when connecting improves responsiveness */
          /* Use very short sleep during shutdown to be more responsive */

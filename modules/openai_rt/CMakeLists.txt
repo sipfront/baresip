@@ -28,8 +28,7 @@ set(SRCS
     audio.c
     websocket.c
     utils.c
-    calls.c
-    dump.c)
+    calls.c)
 
 if(STATIC)
     add_library(${PROJECT_NAME} OBJECT ${SRCS})
@@ -78,36 +77,4 @@ endif()
 
 target_compile_options(${PROJECT_NAME} PRIVATE
     -Wno-pedantic
-    -D_GNU_SOURCE
-    -DBARESIP_MODULE)
-
-# ---- test harness ----
-add_executable(openai_rt_test
-    test.c
-    websocket.c
-    dump.c
-    utils.c
-    test_shim.c     # <--- add the shim
-)
-
-# Headers the test needs
-target_include_directories(openai_rt_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/include         # openai_rt.h, baresip.h, etc.
-    ${SNDFILE_INCLUDE_DIR}              # from find_package(SNDFILE)
-    ${JSON_C_INCLUDE_DIRS}              # from pkg_check_modules(JSON_C)
-    ${WEBSOCKETS_INCLUDE_DIRS}
-)
-
-# Make sure the linker sees the right libraries (order matters a bit)
-# Use the variables discovered by find_package / pkg_check_modules
-target_link_libraries(openai_rt_test PRIVATE
-    ${RE_LIBRARY}               # libre, discovered above
-    baresip                     # the core baresip lib (already built in tree)
-    ${WEBSOCKETS_LIBRARIES}     # libwebsockets
-    ${JSON_C_LIBRARIES}         # json-c
-    ${SNDFILE_LIBRARIES}        # <-- system libsndfile (sf_open, etc.)
-    ssl crypto z pthread m
-)
-
-# Get the GNU prototype for pthread_timedjoin_np to silence the warning
-target_compile_options(openai_rt_test PRIVATE -D_GNU_SOURCE)
+    -D_GNU_SOURCE)

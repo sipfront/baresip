@@ -12,7 +12,7 @@ char *encode_audio_base64(const void *data, size_t len)
     size_t out_len;
     int err;
 
-    DEBUG_INFO("Encoding %zu bytes to base64\n", len);
+    //DEBUG_INFO("Encoding %zu bytes to base64\n", len);
 
     if (!data || len == 0) {
         DEBUG_INFO("Invalid input data\n");
@@ -27,7 +27,7 @@ char *encode_audio_base64(const void *data, size_t len)
      * The libre base64_encode might add newlines, so we allocate extra
      */
     out_len = ((len + 2) / 3) * 4 + (len / 40) + 64;  // Extra space for safety
-    DEBUG_INFO("++++ out_len: %zu\n", out_len);
+    //DEBUG_INFO("++++ out_len: %zu\n", out_len);
 
     encoded = mem_zalloc(out_len, NULL);
     if (!encoded) {

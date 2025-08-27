@@ -23,7 +23,6 @@ static void module_destructor(void *arg)
 	calls_close();
 	websocket_close();
 	audio_close();
-	dump_close();  /* Close dump file */
 
 	/* Clear global state */
 	memset(&g_oairt, 0, sizeof(g_oairt));
@@ -50,15 +49,6 @@ static int module_init(void)
 		warning("openai_rt: No API key configured. Please set openai_rt_api_key in config\n");
 		return EINVAL;
 	}
-
-	/* Initialize dump for debugging */
-
-	err = dump_init();
-	if (err) {
-		warning("openai_rt: failed to initialize dump (non-fatal): %m\n", err);
-		// Non-fatal, continue 
-	}
-
 
 	/* Initialize subsystems */
 	err = websocket_init();

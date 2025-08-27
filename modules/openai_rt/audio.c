@@ -325,10 +325,7 @@ void handle_incoming_audio(const int16_t *s16_data, size_t sampc)
 {
     if (!s16_data || sampc == 0 || !g_oairt.call_active) return;
 
-    info("openai_rt: %s Handle incoming audio in active call (PCM path)\n", get_timestamp());
-
-    /* 1) Keep original 8 kHz PCM reference WAV (good for A/B) */
-    dump_audio_orig(s16_data, sampc, 8000, 1);
+    //info("openai_rt: %s Handle incoming audio in active call (PCM path)\n", get_timestamp());
 
     /* 2) Upsample 8k -> 24k (x3) into a scratch buffer */
     size_t out_sampc = 3 * sampc;
@@ -343,15 +340,6 @@ void handle_incoming_audio(const int16_t *s16_data, size_t sampc)
         /* continue with 'produced' anyway */
         out_sampc = produced;
     }
-
-    /* Optional probe: log a few values */
-    if (out_sampc >= 6) {
-        info("openai_rt: upsample probe 24k: [%d,%d,%d,%d,%d,%d] ...\n",
-            ups_buf[0], ups_buf[1], ups_buf[2], ups_buf[3], ups_buf[4], ups_buf[5]);
-    }
-
-    /* 3) Dump the upsampled 24 kHz PCM16 (your dump.c already opens 24k WAV) */
-    //dump_audio(ups_buf, out_sampc);
 
     /* 4) Send 24 kHz PCM16 to OpenAI: base64 of raw little-endian bytes */
     size_t byte_len = out_sampc * sizeof(int16_t);
@@ -369,12 +357,12 @@ void handle_incoming_audio(const int16_t *s16_data, size_t sampc)
             if (err) {
                 warning("openai_rt: Failed to queue PCM audio: %m\n", err);
             } else {
-                DEBUG_INFO("Queued %zu bytes of 24k PCM16 to OpenAI\n", byte_len);
+                //DEBUG_INFO("Queued %zu bytes of 24k PCM16 to OpenAI\n", byte_len);
                 g_audio.audio_accumulated += byte_len;
                 if (g_audio.audio_accumulated >= g_audio.commit_threshold) {
-                    double ms = (double)g_audio.audio_accumulated / 2 / 24000.0 * 1000.0;
-                    info("openai_rt: committing %.1f ms (%u bytes)\n",
-                         ms, (unsigned)g_audio.audio_accumulated);
+                    //double ms = (double)g_audio.audio_accumulated / 2 / 24000.0 * 1000.0;
+                    //info("openai_rt: committing %.1f ms (%u bytes)\n",
+                    //     ms, (unsigned)g_audio.audio_accumulated);
                     
                     /* Only commit if session configuration has been applied */
                     if (g_oairt.session_cfg_applied) {
@@ -555,8 +543,8 @@ static int read_from_injection_buffer(int16_t *samples, size_t max_samples)
         maybe_shrink_injection_buffer();
     }
     
-    DEBUG_INFO("Read %zu samples from injection buffer, remaining: %zu, read_pos: %zu, write_pos: %zu\n", 
-               samples_to_read, g_audio.injection_available, g_audio.injection_read_pos, g_audio.injection_write_pos);
+    //DEBUG_INFO("Read %zu samples from injection buffer, remaining: %zu, read_pos: %zu, write_pos: %zu\n", 
+    //           samples_to_read, g_audio.injection_available, g_audio.injection_read_pos, g_audio.injection_write_pos);
     return (int)samples_to_read;
 }
 
@@ -573,7 +561,7 @@ static int ausrc_read_thread(void *arg)
     uint64_t slot_due = tmr_jiffies();  /* first frame immediately */
 
     size_t frame_count = 0;
-    uint64_t t0 = tmr_jiffies();
+    //uint64_t t0 = tmr_jiffies();
 
     st->run = true;
     while (st->run && st->ready) {
@@ -619,18 +607,18 @@ static int ausrc_read_thread(void *arg)
         struct auframe af;
         auframe_init(&af, st->prm.fmt, st->sampv, st->sampc, st->prm.srate, st->prm.ch);
 
-        dump_audio_response(st->sampv, st->sampc); /* optional debug */
         st->rh(&af, st->arg);
         st->total_samples_sent += st->sampc;
 
         frame_count++;
+        /*
         if ((frame_count % 50) == 0) {
             uint64_t dt = tmr_jiffies() - t0;
             double fps = (double)frame_count * 1000.0 / (double)dt;
             DEBUG_INFO("Audio source paced: %zu frames / %llums => %.2f fps (target=%.2f)\n",
                        frame_count, (unsigned long long)dt, fps, 1000.0 / ptime_ms);
         }
-
+        */
         /* ---- realtime pacing with drift correction ---- */
         slot_due += ptime_ms;
         uint64_t now = tmr_jiffies();
@@ -641,8 +629,8 @@ static int ausrc_read_thread(void *arg)
             uint64_t lag = now - slot_due;
             uint64_t missed = lag / ptime_ms + 1;   /* skip missed slots */
             slot_due += missed * ptime_ms;
-            DEBUG_INFO("Audio pacer late by %llums; skipping %llu slots to realign\n",
-                       (unsigned long long)lag, (unsigned long long)missed);
+            //DEBUG_INFO("Audio pacer late by %llums; skipping %llu slots to realign\n",
+            //           (unsigned long long)lag, (unsigned long long)missed);
         }
     }
 
@@ -663,7 +651,6 @@ static int auplay_write_thread(void *arg)
     
     /* Track thread activity for debugging */
     size_t frame_count = 0;
-    uint64_t last_activity_time = tmr_jiffies();
     
     /* Create a single auframe ONCE at the beginning (like WASAPI/ALSA) */
     struct auframe af;
@@ -672,15 +659,6 @@ static int auplay_write_thread(void *arg)
     
     while (st->run && st->ready) {
         frame_count++;
-        
-        /* Log activity every 100 frames (2 seconds) */
-        if (frame_count % 100 == 0) {
-            uint64_t current_time = tmr_jiffies();
-            uint64_t elapsed = current_time - last_activity_time;
-            info("openai_rt: %s Audio thread active: %zu frames processed, elapsed: %llu ms\n", 
-                  get_timestamp(), frame_count, (unsigned long long)elapsed);
-            last_activity_time = current_time;
-        }
         
         /* Check if call is still active - stop if not */
         if (!g_oairt.call_active) {
@@ -1016,7 +994,7 @@ void openai_rt_receive_audio(const int16_t *sampv, size_t sampc)
     g_audio.play_st->total_samples_received += sampc;
 
     /* Immediately send this audio to OpenAI */
-    info("openai_rt: %s Processing %zu audio samples\n", get_timestamp(), sampc);
+    //info("openai_rt: %s Processing %zu audio samples\n", get_timestamp(), sampc);
     handle_incoming_audio(sampv, sampc);
 }
 
@@ -1179,10 +1157,11 @@ static int safe_clear_buffer(struct mbuf *buffer, const char *buffer_name)
 /* Send commit message to OpenAI to process accumulated audio */
 static void send_audio_commit(void)
 {
-    char *json_msg = NULL;
+
     int err;
 
- /*   
+ /* sending commit not needed,  since we're using server_vad  
+    char *json_msg = NULL;
     
     DEBUG_INFO("Sending audio commit to OpenAI\n");
     
@@ -1412,8 +1391,8 @@ int write_to_injection_buffer(const int16_t *samples, size_t sample_count)
 
     mtx_unlock(&g_audio.injection_buffer_mutex);
 
-    DEBUG_INFO("Wrote %zu samples to injection buffer, available: %zu, write_pos: %zu, read_pos: %zu\n",
-               sample_count, g_audio.injection_available,
-               g_audio.injection_write_pos, g_audio.injection_read_pos);
+    //DEBUG_INFO("Wrote %zu samples to injection buffer, available: %zu, write_pos: %zu, read_pos: %zu\n",
+    //           sample_count, g_audio.injection_available,
+    //           g_audio.injection_write_pos, g_audio.injection_read_pos);
     return 0;
 }
