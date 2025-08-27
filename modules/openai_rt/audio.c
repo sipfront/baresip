@@ -240,6 +240,7 @@ cleanup:
     mem_deref(g_audio.g711u_input_buffer);
     mem_deref(g_audio.g711u_output_buffer);
     mem_deref(g_audio.injection_buffer);
+    /* Note: src_st and play_st are not allocated during init, so no need to free them here */
     return ENOMEM;
 }
 
@@ -248,7 +249,9 @@ void audio_close(void)
 {
     DEBUG_ENTER();
     
-    /* Stop audio threads */
+    /* Always clean up, regardless of whether audio threads were active */
+    
+    /* Stop audio threads if they exist */
     if (g_audio.src_st && g_audio.src_st->thread) {
         /* Log queue sizes before cleanup */
         DEBUG_INFO("Cleaning up audio system - read queue: %u, event queue: %u\n",
@@ -257,25 +260,33 @@ void audio_close(void)
         /* Properly free all remaining audio frames and events in queues */
         free_audio_queue(&g_audio.read_queue, &g_audio.read_queue_mutex);
         free_event_queue(&g_audio.event_queue, &g_audio.event_queue_mutex);
-        
-        /* Clean up queues and synchronization objects */
-        mtx_destroy(&g_audio.read_queue_mutex);
-        mtx_destroy(&g_audio.write_queue_mutex);
-        mtx_destroy(&g_audio.event_queue_mutex);
-        mtx_destroy(&g_audio.injection_buffer_mutex);
-        cnd_destroy(&g_audio.read_queue_cond);
-        cnd_destroy(&g_audio.write_queue_cond);
-        cnd_destroy(&g_audio.event_queue_cond);
-        
-        /* Free G711u buffers */
-        g_audio.g711u_input_buffer = mem_deref(g_audio.g711u_input_buffer);
-        g_audio.g711u_output_buffer = mem_deref(g_audio.g711u_output_buffer);
-        
-        /* Free injection buffer */
-        g_audio.injection_buffer = mem_deref(g_audio.injection_buffer);
-        
-        DEBUG_INFO("Audio subsystem closed\n");
     }
+    
+    /* Always clean up synchronization objects and buffers */
+    mtx_destroy(&g_audio.read_queue_mutex);
+    mtx_destroy(&g_audio.write_queue_mutex);
+    mtx_destroy(&g_audio.event_queue_mutex);
+    mtx_destroy(&g_audio.injection_buffer_mutex);
+    cnd_destroy(&g_audio.read_queue_cond);
+    cnd_destroy(&g_audio.write_queue_cond);
+    cnd_destroy(&g_audio.event_queue_cond);
+    
+    /* Free G711u buffers */
+    g_audio.g711u_input_buffer = mem_deref(g_audio.g711u_input_buffer);
+    g_audio.g711u_output_buffer = mem_deref(g_audio.g711u_output_buffer);
+    
+    /* Free injection buffer */
+    g_audio.injection_buffer = mem_deref(g_audio.injection_buffer);
+    
+    /* Free audio structures - only if they were allocated */
+    if (g_audio.src_st) {
+        g_audio.src_st = mem_deref(g_audio.src_st);
+    }
+    if (g_audio.play_st) {
+        g_audio.play_st = mem_deref(g_audio.play_st);
+    }
+    
+    DEBUG_INFO("Audio subsystem closed\n");
 }
 
 /* 8 kHz -> 24 kHz (x3) linear upsampler for PCM16 mono */
@@ -1281,7 +1292,7 @@ int resize_injection_buffer(size_t new_size_samples)
     }
     
     /* Allocate new larger buffer */
-    int16_t *new_buffer = mem_realloc(g_audio.injection_buffer, new_size_samples * sizeof(int16_t));
+    int16_t *new_buffer = mem_alloc(new_size_samples * sizeof(int16_t), NULL);
     if (!new_buffer) {
         mtx_unlock(&g_audio.injection_buffer_mutex);
         warning("openai_rt: Failed to resize injection buffer to %zu samples\n", new_size_samples);
@@ -1301,7 +1312,7 @@ int resize_injection_buffer(size_t new_size_samples)
             
             /* Extract all data from old buffer */
             while (temp_pos < g_audio.injection_available) {
-                temp_buffer[temp_pos++] = new_buffer[old_pos];
+                temp_buffer[temp_pos++] = g_audio.injection_buffer[old_pos];
                 old_pos = (old_pos + 1) % g_audio.injection_buffer_size;
             }
             
@@ -1314,6 +1325,9 @@ int resize_injection_buffer(size_t new_size_samples)
             g_audio.injection_write_pos = g_audio.injection_available;
         }
     }
+    
+    /* Free the old buffer and assign the new one */
+    mem_deref(g_audio.injection_buffer);
     
     g_audio.injection_buffer = new_buffer;
     g_audio.injection_buffer_size = new_size_samples;

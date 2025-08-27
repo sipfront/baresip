@@ -809,9 +809,8 @@ static void handle_openai_audio_delta(const char *json_str)
      g_oairt.ws_state = WS_DISCONNECTED;
      g_oairt.session_ready = false;
  
-     /* Clear message queues */
-     list_flush(&g_oairt.to_openai_queue);
-     list_flush(&g_oairt.from_openai_queue);
+         /* Clear message queues properly */
+    websocket_clear_message_queue();
  
      /* Clean up mutex and condition variable */
      pthread_mutex_destroy(&g_oairt.ws_mutex);
