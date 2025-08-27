@@ -40,7 +40,7 @@ struct ws_message {
 struct openai_rt {
     /* Configuration */
     char api_key[256];
-    char prompt[1024];
+    char prompt[4096];
     
     /* Call state */
     bool call_active;

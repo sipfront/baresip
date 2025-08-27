@@ -437,7 +437,7 @@ static void handle_openai_audio_delta(const char *json_str)
      ccinfo.context = g_oairt.ws_context;
      ccinfo.address = "api.openai.com";
      ccinfo.port = 443;
-     ccinfo.path = "/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17";
+     ccinfo.path = "/v1/realtime?model=gpt-4o-realtime-preview-2025-06-03";
      ccinfo.host = "api.openai.com";                  /* SNI / Host header */
      ccinfo.origin = NULL;                            /* Not required */
      ccinfo.protocol = NULL;                          /* DO NOT send Sec-WebSocket-Protocol */
@@ -536,6 +536,12 @@ static void handle_openai_audio_delta(const char *json_str)
          "{"
            "\"type\":\"session.update\","
            "\"session\":{"
+             "\"modalities\": [\"text\", \"audio\"],"
+             "\"instructions\": \"%s\","
+             "\"voice\": \"sage\","
+             "\"temperature\": 0.8,"
+             "\"input_audio_noise_reduction\":{\"type\":\"near_field\"},"
+             "\"tool_choice\":\"none\","
              "\"input_audio_format\":\"%s\","
              "\"output_audio_format\":\"%s\","
              "\"input_audio_transcription\":{\"model\": \"gpt-4o-mini-transcribe\"},"
@@ -549,6 +555,7 @@ static void handle_openai_audio_delta(const char *json_str)
              "}"
            "}"
          "}",
+         g_oairt.prompt, 
          in_fmt, out_fmt
      );
  

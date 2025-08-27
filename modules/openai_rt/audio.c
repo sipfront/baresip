@@ -1181,6 +1181,8 @@ static void send_audio_commit(void)
 {
     char *json_msg = NULL;
     int err;
+
+ /*   
     
     DEBUG_INFO("Sending audio commit to OpenAI\n");
     
@@ -1200,6 +1202,7 @@ static void send_audio_commit(void)
         }
         mem_deref(json_msg);
     }
+*/
     
     /* After commit, send response.create to tell OpenAI to start processing */
     if (!g_audio.response_created) {
@@ -1212,8 +1215,7 @@ static void send_audio_commit(void)
                  "\"instructions\":\"%s\""
               "}"
             "}",
-            str_isset(g_oairt.prompt) ? g_oairt.prompt :
-            "You are a helpful voice assistant for phone calls."
+            g_oairt.prompt
         );
         
         if (response_msg) {
