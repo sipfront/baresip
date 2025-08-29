@@ -1143,13 +1143,10 @@ static void send_audio_commit(void)
             "{"
               "\"type\":\"response.create\","
               "\"response\":{"
-                 "\"modalities\":[\"audio\",\"text\"],"
-                 "\"instructions\":\"%s\","
-                 "\"voice\":\"%s\"" 
+                 "\"instructions\":\"%s\""
               "}"
             "}",
-            g_oairt.prompt,
-            g_oairt.voice
+            g_oairt.prompt
         );
         
         if (response_msg) {

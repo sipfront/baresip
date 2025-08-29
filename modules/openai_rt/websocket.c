@@ -138,7 +138,7 @@ static void handle_openai_audio_delta(const char *json_str)
         return;
     }
     const char *type = json_object_get_string(type_obj);
-    if (!type || strcmp(type, "response.audio.delta") != 0) {
+    if (!type || strcmp(type, "response.output_audio.delta") != 0) {
         json_object_put(root);
         return;
     }
@@ -213,7 +213,7 @@ static void handle_openai_audio_delta(const char *json_str)
  
      case LWS_CALLBACK_CLIENT_RECEIVE:
          //info("openai_rt: WebSocket received %zu bytes\n", len);
-         //DEBUG_INFO("Received message from OpenAI: %s\n", (const char *)in);
+         DEBUG_INFO("Received message from OpenAI: %s\n", (const char *)in);
  
          if (len > 0 && g_oairt.ws_state == WS_CONNECTED) {
              queue_message_from_openai((const uint8_t *)in, len);
@@ -330,6 +330,7 @@ static void handle_openai_audio_delta(const char *json_str)
      }
      *p += written;
  
+     /*
      written = lws_snprintf((char *)*p, end - *p,
              "OpenAI-Beta: realtime=v1\r\n");
      if (written < 0 || written >= (int)(end - *p)) {
@@ -337,7 +338,7 @@ static void handle_openai_audio_delta(const char *json_str)
          return -1;
      }
      *p += written;
- 
+    */
      return 0;
  }
  
@@ -458,36 +459,15 @@ static void handle_openai_audio_delta(const char *json_str)
          return;
      }
  
-     const char *in_fmt  = "pcm16";
-     const char *out_fmt = "pcm16";
- 
      re_sdprintf(&json_msg,
          "{"
            "\"type\":\"session.update\","
            "\"session\":{"
-             "\"modalities\": [\"text\", \"audio\"],"
-             "\"instructions\": \"%s\","
-             "\"voice\": \"%s\","
-             "\"temperature\": 0.8,"
-             "\"input_audio_noise_reduction\":{\"type\":\"near_field\"},"
-             "\"tool_choice\":\"none\","
-             "\"input_audio_format\":\"%s\","
-             "\"output_audio_format\":\"%s\","
-             "\"input_audio_transcription\":{\"model\": \"gpt-4o-mini-transcribe\"},"
-             "\"turn_detection\":{"
-               "\"type\":\"server_vad\","
-               "\"threshold\":0.5,"
-               "\"prefix_padding_ms\":300,"
-               "\"silence_duration_ms\":500,"
-               "\"create_response\":%s,"
-               "\"interrupt_response\":true"
-             "}"
+             "\"type\":\"realtime\","
+             "\"instructions\": \"%s\""
            "}"
          "}",
-         g_oairt.prompt, 
-         g_oairt.voice,
-         in_fmt, out_fmt,
-         g_oairt.wait_for_greeting ? "true" : "false"
+         g_oairt.prompt
      );
  
      if (json_msg) {
