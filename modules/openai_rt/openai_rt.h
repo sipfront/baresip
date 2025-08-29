@@ -41,7 +41,6 @@ struct openai_rt {
     /* Configuration */
     char api_key[256];
     char prompt[4096];
-    char voice[256];
     bool wait_for_greeting;
     /* Call state */
     bool call_active;
