@@ -112,6 +112,8 @@ int read_config(void)
     conf_get_str(conf_cur(), "openai_rt_prompt", g_oairt.prompt, sizeof(g_oairt.prompt));
     conf_get_str(conf_cur(), "openai_rt_api_key", g_oairt.api_key, sizeof(g_oairt.api_key));
     conf_get_str(conf_cur(), "openai_rt_voice", g_oairt.voice, sizeof(g_oairt.voice));
+    g_oairt.wait_for_greeting = true;
+    conf_get_bool(conf_cur(), "openai_rt_wait_for_greeting", &g_oairt.wait_for_greeting);
 
     /* Set defaults if not configured */
     if (!str_isset(g_oairt.prompt))

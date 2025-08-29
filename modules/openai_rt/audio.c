@@ -1133,7 +1133,10 @@ static void send_audio_commit(void)
     }
 */
     
-    /* After commit, send response.create to tell OpenAI to start processing */
+
+    if (g_oairt.wait_for_greeting) {
+        g_audio.response_created = true;
+    }
     if (!g_audio.response_created) {
         char *response_msg = NULL;
         re_sdprintf(&response_msg,

@@ -479,14 +479,15 @@ static void handle_openai_audio_delta(const char *json_str)
                "\"threshold\":0.5,"
                "\"prefix_padding_ms\":300,"
                "\"silence_duration_ms\":500,"
-               "\"create_response\":true,"
+               "\"create_response\":%s,"
                "\"interrupt_response\":true"
              "}"
            "}"
          "}",
          g_oairt.prompt, 
          g_oairt.voice,
-         in_fmt, out_fmt
+         in_fmt, out_fmt,
+         g_oairt.wait_for_greeting ? "true" : "false"
      );
  
      if (json_msg) {
