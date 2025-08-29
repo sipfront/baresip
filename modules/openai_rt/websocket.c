@@ -165,34 +165,14 @@ static void handle_openai_audio_delta(const char *json_str)
         size_t nsamp24 = nbytes / 2;
 
         if (g_oairt.call_active) {
-            /* Downsample 24k -> 8k (÷3) for baresip injection */
-            size_t max8 = nsamp24 / 3 + 3; /* small slack */
-            int16_t *buf8 = mem_alloc(max8 * sizeof(int16_t), NULL);
-            if (!buf8) {
-                warning("openai_rt: alloc fail for 8k downsample buffer\n");
-            }
-            else {
-                size_t produced8 = downsample_pcm16_24k_to_8k(pcm24, nsamp24, buf8);
-                if (!produced8) {
-                    warning("openai_rt: downsample produced 0 samples\n");
-                }
-                else {
-                    /* Non-blocking: enqueue; ausrc thread will pace. */
-                    int err = write_to_injection_buffer(buf8, produced8);
-                    if (err) {
-                        warning("openai_rt: write_to_injection_buffer failed: %m\n", err);
-                    }
-                    //else {
-                    //    DEBUG_INFO("Queued %zu samples to injection ring (8kHz)\n", produced8);
-                    //}
-                }
-                mem_deref(buf8);
+            int err = write_to_injection_buffer(pcm24, nsamp24);
+            if (err) {
+                warning("openai_rt: write_to_injection_buffer failed: %m\n", err);
             }
         }
         else {
-            DEBUG_INFO("Call not active, skipping audio injection\n");
+            DEBUG_INFO("openai_rt: Call not active, skipping audio injection\n");
         }
-
     }
 
     if (decoded) mem_deref(decoded);

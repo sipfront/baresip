@@ -139,7 +139,7 @@ int audio_init(void)
     DEBUG_ENTER();
     
     /* Initialize audio buffers */
-    g_audio.buffer_size = 160;  /* 160 samples = 20ms at 8kHz */
+    g_audio.buffer_size = 160;  /* 160 samples = 20ms at 24kHz */
     g_audio.g711u_input_buffer = mbuf_alloc(g_audio.buffer_size);
     if (!g_audio.g711u_input_buffer) {
         warning("openai_rt: Failed to allocate input buffer\n");
@@ -159,7 +159,6 @@ int audio_init(void)
     g_audio.response_created = false;
     
     /* Initialize circular buffer for smooth audio injection */
-    /* Buffer size: 200ms of 8kHz audio = 1600 samples (reduced from 8000 for lower latency) */
     g_audio.injection_buffer_size = INJECTION_BUFFER_INITIAL_SIZE;
     g_audio.injection_buffer = mem_alloc(g_audio.injection_buffer_size * sizeof(int16_t), NULL);
     if (!g_audio.injection_buffer) {
@@ -167,8 +166,8 @@ int audio_init(void)
         goto cleanup;
     }
     
-    DEBUG_INFO("Injection buffer initialized: %zu samples (%zu ms at 8kHz)\n", 
-               g_audio.injection_buffer_size, g_audio.injection_buffer_size * 1000 / 8000);
+    DEBUG_INFO("Injection buffer initialized: %zu samples (%zu ms at 24kHz)\n", 
+               g_audio.injection_buffer_size, g_audio.injection_buffer_size * 1000 / 24000);
     
     /* Initialize buffer state */
     g_audio.injection_read_pos = 0;
@@ -289,72 +288,15 @@ void audio_close(void)
     DEBUG_INFO("Audio subsystem closed\n");
 }
 
-/* 8 kHz -> 24 kHz (x3) linear upsampler for PCM16 mono */
-static size_t upsample_pcm16_8k_to_24k(const int16_t *in, size_t in_sampc, int16_t *out /* size >= 3*in_sampc */)
-{
-    if (!in || !out || in_sampc == 0) return 0;
-
-    /* For each pair (s0 -> s1), output: s0, s0 + (s1-s0)/3, s0 + 2*(s1-s0)/3
-       For the last sample, just hold it (s0, s0, s0) */
-    size_t i;
-    for (i = 0; i + 1 < in_sampc; ++i) {
-        const int16_t s0 = in[i];
-        const int16_t s1 = in[i+1];
-        const int32_t d  = (int32_t)s1 - (int32_t)s0;
-
-        out[3*i + 0] = s0;
-        out[3*i + 1] = (int16_t)(s0 + d / 3);
-        out[3*i + 2] = (int16_t)(s0 + (2 * d) / 3);
-    }
-
-    /* last sample: simple hold (avoid reading past end) */
-    const int16_t sl = in[in_sampc - 1];
-    out[3*i + 0] = sl;
-    out[3*i + 1] = sl;
-    out[3*i + 2] = sl;
-
-    return 3 * in_sampc; /* number of output samples at 24 kHz */
-}
-
-/* 24 kHz -> 8 kHz (÷3) linear downsampler for PCM16 mono */
-size_t downsample_pcm16_24k_to_8k(const int16_t *in, size_t in_sampc, int16_t *out /* size >= in_sampc/3 */)
-{
-    if (!in || !out || in_sampc == 0) return 0;
-
-    /* Simple decimation: take every 3rd sample */
-    size_t out_sampc = in_sampc / 3;
-    size_t i;
-    
-    for (i = 0; i < out_sampc; ++i) {
-        out[i] = in[i * 3];
-    }
-
-    return out_sampc;
-}
-
 void handle_incoming_audio(const int16_t *s16_data, size_t sampc)
 {
     if (!s16_data || sampc == 0 || !g_oairt.call_active) return;
 
     //info("openai_rt: %s Handle incoming audio in active call (PCM path)\n", get_timestamp());
 
-    /* 2) Upsample 8k -> 24k (x3) into a scratch buffer */
-    size_t out_sampc = 3 * sampc;
-    int16_t *ups_buf = mem_alloc(out_sampc * sizeof(int16_t), NULL);
-    if (!ups_buf) {
-        warning("openai_rt: upsample buffer alloc failed for %zu samples\n", out_sampc);
-        return;
-    }
-    size_t produced = upsample_pcm16_8k_to_24k(s16_data, sampc, ups_buf);
-    if (produced != out_sampc) {
-        warning("openai_rt: upsample produced %zu, expected %zu\n", produced, out_sampc);
-        /* continue with 'produced' anyway */
-        out_sampc = produced;
-    }
-
     /* 4) Send 24 kHz PCM16 to OpenAI: base64 of raw little-endian bytes */
-    size_t byte_len = out_sampc * sizeof(int16_t);
-    char *b64 = encode_audio_base64((const uint8_t *)ups_buf, byte_len);
+    size_t byte_len = sampc * sizeof(int16_t);
+    char *b64 = encode_audio_base64((const uint8_t *)s16_data, byte_len);
     if (b64) {
         char *json_msg = NULL;
         re_sdprintf(&json_msg,
@@ -390,9 +332,6 @@ void handle_incoming_audio(const int16_t *s16_data, size_t sampc)
     } else {
         warning("openai_rt: base64 encode failed for %zu bytes\n", byte_len);
     }
-
-    /* 5) Free scratch */
-    mem_deref(ups_buf);
 }
 
 /* Handle outgoing audio from OpenAI - convert from G711u and buffer for injection */
@@ -711,7 +650,7 @@ int openai_rt_ausrc_alloc(struct ausrc_st **stp, const struct ausrc *as,
     (void)dev;
     (void)errh;
 
-    info("openai_rt: opening audio source (8kHz, 1 channel, S16LE)\n");
+    info("openai_rt: opening audio source (24kHz, 1 channel, S16LE)\n");
 
     st = mem_zalloc(sizeof(*st), ausrc_destructor);
     if (!st) {
@@ -729,10 +668,10 @@ int openai_rt_ausrc_alloc(struct ausrc_st **stp, const struct ausrc *as,
         st->prm.fmt = AUFMT_S16LE;
     }
     
-    /* Force 8kHz sample rate for OpenAI compatibility */
-    if (st->prm.srate != 8000) {
-        warning("openai_rt: Forcing 8kHz sample rate (was %u)\n", st->prm.srate);
-        st->prm.srate = 8000;
+    /* Force 24kHz sample rate for OpenAI compatibility */
+    if (st->prm.srate != 24000) {
+        warning("openai_rt: Forcing 24kHz sample rate (was %u)\n", st->prm.srate);
+        st->prm.srate = 24000;
     }
     
     /* Ensure reasonable packet time (20ms is typical) */
@@ -788,7 +727,7 @@ int openai_rt_auplay_alloc(struct auplay_st **stp, const struct auplay *ap,
     (void)ap;
     (void)dev;
 
-    info("openai_rt: opening audio playback (8kHz, 1 channel, S16LE)\n");
+    info("openai_rt: opening audio playback (24kHz, 1 channel, S16LE)\n");
 
     st = mem_zalloc(sizeof(*st), auplay_destructor);
     if (!st) {
@@ -1336,8 +1275,8 @@ int resize_injection_buffer(size_t new_size_samples)
     
     mtx_unlock(&g_audio.injection_buffer_mutex);
     
-    info("openai_rt: Injection buffer resized to %zu samples (%.1f seconds @ 8kHz)\n", 
-         new_size_samples, (double)new_size_samples / 8000.0);
+    info("openai_rt: Injection buffer resized to %zu samples (%.1f seconds @ 24kHz)\n", 
+         new_size_samples, (double)new_size_samples / 24000.0);
     
     return 0;
 }
