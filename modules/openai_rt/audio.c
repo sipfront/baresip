@@ -1202,10 +1202,12 @@ static void send_audio_commit(void)
               "\"type\":\"response.create\","
               "\"response\":{"
                  "\"modalities\":[\"audio\",\"text\"],"
-                 "\"instructions\":\"%s\""
+                 "\"instructions\":\"%s\","
+                 "\"voice\":\"%s\"" 
               "}"
             "}",
-            g_oairt.prompt
+            g_oairt.prompt,
+            g_oairt.voice
         );
         
         if (response_msg) {
@@ -1356,8 +1358,8 @@ static void maybe_shrink_injection_buffer(void)
             mtx_unlock(&g_audio.injection_buffer_mutex);
             
             int err = resize_injection_buffer(new_size);
-            if (!err) {
-                DEBUG_INFO("Shrunk injection buffer to %zu samples\n", new_size);
+            if (err) {
+                warning("openai_rt: Failed to shrink injection buffer: %m\n", err);
             }
             return;
         }
