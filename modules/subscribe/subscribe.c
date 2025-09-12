@@ -1,6 +1,71 @@
 #include <re.h>
 #include <baresip.h>
 
+static void notify_event_emit(struct ua *ua, const struct sip_msg *msg)
+{
+    const struct sip_hdr *hdr_event = sip_msg_hdr(msg, SIP_HDR_EVENT);
+    const struct sip_hdr *hdr_subs  = sip_msg_hdr(msg, SIP_HDR_SUBSCRIPTION_STATE);
+    const struct sip_hdr *hdr_ctype = sip_msg_hdr(msg, SIP_HDR_CONTENT_TYPE);
+
+    struct odict *od = NULL;
+    char *buf = NULL;
+	int err;
+
+    if (!ua || !msg)
+        return;
+
+    err = odict_alloc(&od, 32);
+    if (err)
+        return;
+
+    if (hdr_event && pl_isset(&hdr_event->val))
+		re_sdprintf(&buf, "%r", &hdr_event->val);
+        odict_entry_add(od, "event", ODICT_STRING, buf);
+
+    if (hdr_subs && pl_isset(&hdr_subs->val))
+        re_sdprintf(&buf, "%r", &hdr_subs->val);
+		odict_entry_add(od, "substate", ODICT_STRING, buf);
+
+    if (hdr_ctype && pl_isset(&hdr_ctype->val))
+        re_sdprintf(&buf, "%r", &hdr_ctype->val);
+		odict_entry_add(od, "ctype", ODICT_STRING, buf);
+
+    if (msg->mb && mbuf_get_left(msg->mb) > 0) {
+		re_sdprintf(&buf, "%b", mbuf_buf(msg->mb), mbuf_get_left(msg->mb));
+		odict_entry_add(od, "body", ODICT_STRING, buf);
+	}
+
+	bevent_ua_emit(UA_EVENT_SUB_NOTIFY, ua,
+                    "%H", json_encode_odict, od);
+    mem_deref(od);
+}
+
+
+
+static int auth_handler(char **username, char **password,
+			const char *realm, void *arg)
+{
+	return account_auth(arg, username, password, realm);
+}
+
+
+static void notify_handler(struct sip *sip, const struct sip_msg *msg,
+			   void *arg)
+{
+	struct ua *ua = arg;
+
+	// Trigger NOTIFY event
+	notify_event_emit(ua, msg);
+
+	// Accept everything for now
+	(void) sip_treply(NULL, sip, msg, 200, "OK");
+}
+static void close_handler(int err, const struct sip_msg *msg,
+			  const struct sipevent_substate *substate, void *arg)
+{
+	/* TODO */
+}
+
 static int cmd_subscribe(struct re_printf *pf, void *arg)
 {
 	const struct cmd_arg *carg = arg;
@@ -44,21 +109,20 @@ static int cmd_subscribe(struct re_printf *pf, void *arg)
 	const char *routev[1];
 	routev[0] = ua_outbound(ua);
 
-    // Simple call to sipevent_subscribe with defaults
     int err = sipevent_subscribe(&sub,
-                                 uag_sipevent_sock(), // get the UA's sipevent socket
-                                 target,               // URI to subscribe
-                                 NULL,                 // from_name
-                                 account_aor(ua_account(ua)),           // from_uri
-                                 event,                // event type
-                                 NULL,                 // id
-                                 3600,                 // expires
-                                 ua_cuser(ua),                 // cuser
-                                 routev, routev[0] ? 1 : 0,              // routev, routec
-                                 NULL, NULL,           // auth handler, arg
-                                 false,                // aref
-                                 NULL, NULL, NULL, NULL, // forkh, notifyh, closeh, arg
-                                 NULL);                // fmt
+                                 uag_sipevent_sock(),			// get the UA's sipevent socket
+                                 target,						// URI to subscribe
+                                 NULL,							// from_name
+                                 account_aor(ua_account(ua)),	// from_uri
+                                 event,							// event type
+                                 NULL,							// id
+                                 300,							// expires
+                                 ua_cuser(ua),					// cuser
+                                 routev, routev[0] ? 1 : 0,		// routev, routec
+                                 auth_handler, ua_account(ua),	// auth handler, arg
+                                 false,							// aref
+                                 NULL, notify_handler, close_handler, ua,		// forkh, notifyh, closeh, arg
+                                 NULL);							// fmt
 
     if (err) {
         re_hprintf(pf, "Subscribe failed: %m\n", err);

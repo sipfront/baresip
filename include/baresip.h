@@ -955,6 +955,7 @@ enum ua_event {
 	UA_EVENT_AUDIO_LATENCY_OUTGOING, /**< click detection on encoder side*/
 
 	UA_EVENT_MAX,
+	UA_EVENT_SUB_NOTIFY,
 };
 
 /* Define function pointer for event callback */
