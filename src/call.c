@@ -1730,7 +1730,7 @@ int call_send_digit(struct call *call, char key)
 			break;
 	}
 
-	bevent_call_emit(UA_EVENT_CALL_DTMF_START_SND, call, "%c", key);
+	bevent_call_emit(UA_EVENT_CALL_SND_DTMF_START, call, "%c", key);
 	if (info) {
 		if (key != KEYCODE_REL) {
 			err = send_dtmf_info(call, key);
@@ -1790,7 +1790,7 @@ int call_send_digit(struct call *call, char key)
 		bevent_call_emit(UA_EVENT_CALL_SND_DTMF_POUND,
 			call, "%c", key);
 	}
-	bevent_call_emit(UA_EVENT_CALL_DTMF_END_SND, call, "%c", key);
+	bevent_call_emit(UA_EVENT_CALL_SND_DTMF_END, call, "%c", key);
 	return err;
 }
 

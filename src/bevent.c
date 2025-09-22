@@ -1057,7 +1057,7 @@ const char *uag_event_str(enum ua_event ev)
 	case UA_EVENT_CALL_DTMF_ASTERISK:   return "CALL_DTMF_*";
 	case UA_EVENT_CALL_DTMF_POUND:      return "CALL_DTMF_#";
 	case UA_EVENT_CALL_DTMF_END:        return "CALL_DTMF_END";
-	case UA_EVENT_CALL_DTMF_START_SND:  return "CALL_DTMF_START_SND";
+	case UA_EVENT_CALL_SND_DTMF_START:  return "CALL_SND_DTMF_START";
 	case UA_EVENT_CALL_SND_DTMF_0:      return "CALL_SND_DTMF_0";
 	case UA_EVENT_CALL_SND_DTMF_1:      return "CALL_SND_DTMF_1";
 	case UA_EVENT_CALL_SND_DTMF_2:      return "CALL_SND_DTMF_2";
@@ -1074,7 +1074,7 @@ const char *uag_event_str(enum ua_event ev)
 	case UA_EVENT_CALL_SND_DTMF_D:      return "CALL_SND_DTMF_D";
 	case UA_EVENT_CALL_SND_DTMF_ASTERISK:	return "CALL_SND_DTMF_*";
 	case UA_EVENT_CALL_SND_DTMF_POUND:  return "CALL_SND_DTMF_#";
-	case UA_EVENT_CALL_DTMF_END_SND:    return "CALL_DTMF_END_SND";
+	case UA_EVENT_CALL_SND_DTMF_END:    return "CALL_SND_DTMF_END";
 	case UA_EVENT_CALL_RTPESTAB:        return "CALL_RTPESTAB";
 	case UA_EVENT_CALL_RTCP:            return "CALL_RTCP";
 	case UA_EVENT_CALL_MENC:            return "CALL_MENC";
