@@ -128,8 +128,9 @@ static int cmd_subscribe(struct re_printf *pf, void *arg)
         re_hprintf(pf, "Subscribe failed: %m\n", err);
         return 0;
     }
-
+	/* TODO: Send SUBSCRIBE event*/
     re_hprintf(pf, "Subscription sent to %s for event %s\n", target, event);
+
     return 0;
 }
 
