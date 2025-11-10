@@ -391,6 +391,15 @@ void rtprecv_decode(const struct sa *src, const struct rtp_header *hdr,
 		return;
 	}
 
+	info("RTP recv: stream=%s src=%J PT=%u seq=%u ts=%u ssrc=0x%08x len=%zu\n",
+     rx->name,
+     src,
+     hdr->pt,
+     hdr->seq,
+     hdr->ts,
+     hdr->ssrc,
+     mbuf_get_left(mb));
+
 	if (rtp_pt_is_rtcp(hdr->pt)) {
 		debug("rtprecv: drop incoming RTCP packet on RTP port"
 		     " (pt=%u)\n", hdr->pt);
