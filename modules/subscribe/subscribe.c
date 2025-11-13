@@ -108,10 +108,10 @@ static void close_handler(int err, const struct sip_msg *msg,
     mem_deref(sub);
 }
 
-static int cmd_subscribe(struct re_printf *pf, void *arg)
+static void cmd_subscribe(struct re_printf *pf, void *arg)
 {
 	const struct cmd_arg *carg = arg;
-    struct le *le;
+    struct le *le = NULL;
     struct ua *ua = NULL;
 
     // Find the first registered UA
@@ -123,14 +123,14 @@ static int cmd_subscribe(struct re_printf *pf, void *arg)
 
     if (!ua) {
         re_hprintf(pf, "No registered UA available\n");
-        return 0;
+        return;
     }
 
     const char *line = (const char *)carg->prm;
 
     if (!line || *line == '\0') {
         re_hprintf(pf, "Usage: /subscribe <target> <event> <expires>\n");
-        return 0;
+        return;
     }
 
     // Duplicate line so strtok doesn't modify const memory
@@ -142,18 +142,17 @@ static int cmd_subscribe(struct re_printf *pf, void *arg)
     char *target = strtok(buf, " \t");
     char *event  = strtok(NULL, " \t");
     char *expires_str = strtok(NULL, " \t");
-    uint32_t expires = (uint32_t)strtoul(expires_str, NULL, 10);
-
 
     if (!target || !event || !expires_str) {
         re_hprintf(pf, "Usage: /subscribe <target> <event> <expires>\n");
-        return 0;
+        return;
     }
+    uint32_t expires = (uint32_t)strtoul(expires_str, NULL, 10);
 
     struct subscription *sub = mem_zalloc(sizeof(*sub), sub_destructor);
     if (!sub) {
         re_hprintf(pf, "Memory allocation error\n");
-        return 0;
+        return;
     }
 
     sub->ua = mem_ref(ua);
@@ -191,14 +190,14 @@ static int cmd_subscribe(struct re_printf *pf, void *arg)
 
     if (err) {
         re_hprintf(pf, "Subscribe failed: %m\n", err);
-        return 0;
+        return;
     }
 	/* TODO: Send SUBSCRIBE event*/
     re_hprintf(pf, "Subscription sent to %s for event %s\n", target, event);
 
     list_append(&subl, &sub->le, sub);
 
-    return 0;
+    return;
 }
 
 static const struct cmd cmdv[] = {
