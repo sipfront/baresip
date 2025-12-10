@@ -67,6 +67,7 @@ set(MODULES
   sdl
   selfview
   serreg
+  sessiontimer
   snapshot
   sndfile
   sndfile-rt-start
