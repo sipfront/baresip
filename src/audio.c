@@ -1195,8 +1195,6 @@ int audio_update(struct audio *a)
 	if (dir & SDP_RECVONLY)
 		err |= audio_decoder_set(a, sc->data, sc->pt, sc->rparams);
 
-	/* Use local direction for sending - if we want to send (sendrecv or
-	 * sendonly), start sending regardless of remote direction */
 	if (ldir & SDP_SENDONLY)
 		err |= audio_encoder_set(a, sc->data, sc->pt, sc->params);
 
@@ -1221,8 +1219,6 @@ int audio_update(struct audio *a)
 		aurecv_stop(a->aur);
 	}
 
-	/* Use local direction for sending - if we want to send (sendrecv or
-	 * sendonly), start sending regardless of remote direction */
 	if (ldir & SDP_SENDONLY) {
 		err |= start_source(&a->tx, a, baresip_ausrcl());
 	}
