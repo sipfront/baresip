@@ -1170,6 +1170,7 @@ int audio_update(struct audio *a)
 	struct list *aufiltl = baresip_aufiltl();
 	struct sdp_media *m;
 	enum sdp_dir dir = SDP_INACTIVE;
+	enum sdp_dir ldir = SDP_INACTIVE;
 	const struct sdp_format *sc = NULL;
 	int err = 0;
 
@@ -1181,6 +1182,7 @@ int audio_update(struct audio *a)
 
 	if (!sdp_media_disabled(m)) {
 		dir = sdp_media_dir(m);
+		ldir = sdp_media_ldir(m);
 		sc = sdp_media_rformat(m, NULL);
 	}
 
@@ -1193,7 +1195,9 @@ int audio_update(struct audio *a)
 	if (dir & SDP_RECVONLY)
 		err |= audio_decoder_set(a, sc->data, sc->pt, sc->rparams);
 
-	if (dir & SDP_SENDONLY)
+	/* Use local direction for sending - if we want to send (sendrecv or
+	 * sendonly), start sending regardless of remote direction */
+	if (ldir & SDP_SENDONLY)
 		err |= audio_encoder_set(a, sc->data, sc->pt, sc->params);
 
 	if (err) {
@@ -1217,7 +1221,9 @@ int audio_update(struct audio *a)
 		aurecv_stop(a->aur);
 	}
 
-	if (dir & SDP_SENDONLY) {
+	/* Use local direction for sending - if we want to send (sendrecv or
+	 * sendonly), start sending regardless of remote direction */
+	if (ldir & SDP_SENDONLY) {
 		err |= start_source(&a->tx, a, baresip_ausrcl());
 	}
 	else {

@@ -195,6 +195,8 @@ static bool mnat_ready(const struct stream *strm)
  */
 int stream_enable_tx(struct stream *strm, bool enable)
 {
+	enum sdp_dir ldir;
+
 	if (!strm)
 		return EINVAL;
 
@@ -209,13 +211,12 @@ int stream_enable_tx(struct stream *strm, bool enable)
 	if (!stream_is_ready(strm))
 		return EAGAIN;
 
-	if (!(sdp_media_rdir(strm->sdp) & SDP_SENDONLY))
-		return ENOTSUP;
+	ldir = sdp_media_ldir(strm->sdp);
 
-	if (sdp_media_ldir(strm->sdp) == SDP_RECVONLY)
-		return ENOTSUP;
-
-	if (sdp_media_ldir(strm->sdp) == SDP_INACTIVE)
+	/* Check local direction - if we want to send (sendrecv or sendonly),
+	 * enable TX regardless of remote direction. This ensures audio resumes
+	 * when resuming from hold even if remote replied with inactive. */
+	if (ldir != SDP_SENDRECV && ldir != SDP_SENDONLY)
 		return ENOTSUP;
 
 	debug("stream: enable %s RTP sender\n", media_name(strm->type));
