@@ -209,13 +209,19 @@ int stream_enable_tx(struct stream *strm, bool enable)
 	if (!stream_is_ready(strm))
 		return EAGAIN;
 
-	if (!(sdp_media_rdir(strm->sdp) & SDP_SENDONLY))
+	enum sdp_dir rdir = sdp_media_rdir(strm->sdp);
+	enum sdp_dir ldir = sdp_media_ldir(strm->sdp);
+	
+	/* Allow sending if remote direction allows it, OR if local direction
+	 * allows sending (handles case where remote replies with inactive
+	 * during call resume but local side wants to send) */
+	if (!(rdir & SDP_SENDONLY) && !(ldir & SDP_SENDONLY))
 		return ENOTSUP;
 
-	if (sdp_media_ldir(strm->sdp) == SDP_RECVONLY)
+	if (ldir == SDP_RECVONLY)
 		return ENOTSUP;
 
-	if (sdp_media_ldir(strm->sdp) == SDP_INACTIVE)
+	if (ldir == SDP_INACTIVE)
 		return ENOTSUP;
 
 	debug("stream: enable %s RTP sender\n", media_name(strm->type));
@@ -1316,8 +1322,18 @@ bool stream_is_ready(const struct stream *strm)
 	}
 	mtx_unlock(strm->tx.lock);
 
-	if (sdp_media_dir(stream_sdpmedia(strm)) == SDP_INACTIVE)
-		return false;
+	/* Check negotiated direction */
+	enum sdp_dir dir = sdp_media_dir(stream_sdpmedia(strm));
+	if (dir == SDP_INACTIVE) {
+		/* If negotiated direction is inactive, check if local
+		 * direction allows sending - this handles the case where
+		 * remote side replies with inactive during call resume,
+		 * but local side wants to send (sendonly or sendrecv) */
+		enum sdp_dir ldir = stream_ldir(strm);
+		/* Allow stream to be ready if local direction allows sending */
+		if (!(ldir & SDP_SENDONLY))
+			return false;
+	}
 
 	return !strm->terminated;
 }
