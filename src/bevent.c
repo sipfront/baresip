@@ -406,6 +406,71 @@ static int add_call_stats(struct odict *od_parent, const struct call *call)
 	return err;
 }
 
+static int add_codec_info(struct odict *od_parent, const struct call *call)
+{
+	struct odict *od = NULL;
+	const struct aucodec *ac_tx, *ac_rx;
+	const struct vidcodec *vc_tx, *vc_rx;
+	int err = 0;
+
+	if (!od_parent || !call)
+		return EINVAL;
+
+	err = odict_alloc(&od, 8);
+	if (err)
+		goto out;
+
+	/* Add audio codec information */
+	if (call_audio(call)) {
+		ac_tx = audio_codec(call_audio(call), true);
+		ac_rx = audio_codec(call_audio(call), false);
+
+		if (ac_tx) {
+			err |= odict_entry_add(od, "audio_tx", ODICT_STRING, ac_tx->name);
+			err |= odict_entry_add(od, "audio_tx_srate", ODICT_INT, (int64_t)ac_tx->srate);
+			err |= odict_entry_add(od, "audio_tx_channels", ODICT_INT, (int64_t)ac_tx->ch);
+		}
+		if (ac_rx) {
+			err |= odict_entry_add(od, "audio_rx", ODICT_STRING, ac_rx->name);
+			err |= odict_entry_add(od, "audio_rx_srate", ODICT_INT, (int64_t)ac_rx->srate);
+			err |= odict_entry_add(od, "audio_rx_channels", ODICT_INT, (int64_t)ac_rx->ch);
+		}
+	}
+
+	/* Add video codec information */
+	if (call_video(call)) {
+		vc_tx = video_codec(call_video(call), true);
+		vc_rx = video_codec(call_video(call), false);
+
+		if (vc_tx) {
+			err |= odict_entry_add(od, "video_tx", ODICT_STRING, vc_tx->name);
+			if (vc_tx->variant) {
+				err |= odict_entry_add(od, "video_tx_variant", ODICT_STRING, vc_tx->variant);
+			}
+		}
+		if (vc_rx) {
+			err |= odict_entry_add(od, "video_rx", ODICT_STRING, vc_rx->name);
+			if (vc_rx->variant) {
+				err |= odict_entry_add(od, "video_rx_variant", ODICT_STRING, vc_rx->variant);
+			}
+		}
+	}
+
+	if (err)
+		goto out;
+
+	/* add object to the parent */
+	err = odict_entry_add(od_parent, "codecs", ODICT_OBJECT, od);
+	if (err)
+		goto out;
+
+ out:
+	if (err)
+		mem_deref(od);
+
+	return err;
+}
+
 /**
  * Encode an event to a dictionary
  *
@@ -548,6 +613,11 @@ int event_encode_dict(struct odict *od, struct ua *ua, enum ua_event ev,
 	}
 	else if (ev == UA_EVENT_CALL_STAT) {
 		err = add_call_stats(od, call);
+		if (err)
+			goto out;
+	}
+	else if (ev == UA_EVENT_CALL_RTPESTAB) {
+		err = add_codec_info(od, call);
 		if (err)
 			goto out;
 	}
