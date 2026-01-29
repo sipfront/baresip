@@ -947,6 +947,9 @@ enum ua_event {
 	
 	UA_EVENT_OPENAI_RESPONSE,
 
+	UA_EVENT_AUDIO_LATENCY_OUTGOING,  /**< Tone sent on encoder side */
+	UA_EVENT_AUDIO_LATENCY_INCOMING,  /**< Tone detected on decoder side */
+
 	UA_EVENT_MAX,
 	UA_EVENT_SUB_NOTIFY,
 };
