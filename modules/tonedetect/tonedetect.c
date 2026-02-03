@@ -12,16 +12,16 @@
 
 #define PI 3.14159265358979323846
 #define TONE_AMPLITUDE 0.3f
-#define DETECTION_WINDOW_MS 15   /* 15ms window (matches 15ms tone length, single-block detection) */
-#define DETECTION_HOP_MS    5    /* evaluate every 5ms (overlapping windows reduces missed tones) */
+#define DETECTION_WINDOW_MS 50   /* 20ms window (for 50ms tone detection) */
+#define DETECTION_HOP_MS    10    /* evaluate every 10ms (overlapping windows reduces missed tones) */
 
 /* Detection tuning (receiver) - balanced for reliable detection */
-#define DETECT_RATIO_THRESHOLD       0.20  /* slightly lower for better detection of all pairs */
-#define DETECT_PEAK_SEPARATION       1.40  /* slightly lower to help detect closer frequency pairs */
-#define DETECT_MIN_BLOCK_ENERGY      1.0e9 /* lower energy requirement - catch quieter tones */
-#define DETECT_CONSECUTIVE_BLOCKS    1     /* single-block detection for 15ms tones */
+#define DETECT_RATIO_THRESHOLD       0.18  /* stricter threshold to reduce false positives */
+#define DETECT_PEAK_SEPARATION       1.35  /* require better peak separation to reduce false positives */
+#define DETECT_MIN_BLOCK_ENERGY      8.0e8 /* higher energy requirement */
+#define DETECT_CONSECUTIVE_BLOCKS    3     /* require 3 consecutive blocks for more reliable detection */
 #define DETECT_SUPPRESS_MS           3000  /* suppress repeat events */
-#define DETECT_MIN_MAGNITUDE         160.0 /* lower magnitude threshold - catch weaker but valid tones */
+#define DETECT_MIN_MAGNITUDE         100.0  /* higher magnitude threshold to filter weak false positives */
 
 /* Sender tone shaping to reduce spectral leakage */
 #define TONE_RAMP_MS                 2     /* fade-in/out (2ms) for 15ms tones - reduces spectral leakage */
@@ -113,7 +113,7 @@ static struct {
 	.num_detect_frequencies = 0,
 	.num_detect_low = 0,
 	.num_detect_high = 0,
-	.tone_duration_ms = 15   /* 15ms tone (brief, matches detection window) */
+	.tone_duration_ms = 30   /* 50ms tone (increased for testing) */
 };
 
 static void enc_destructor(void *arg)
