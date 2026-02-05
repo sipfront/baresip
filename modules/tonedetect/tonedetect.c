@@ -101,6 +101,7 @@ static struct {
 	size_t num_detect_low;          /* Number of low frequencies in detect set */
 	size_t num_detect_high;         /* Number of high frequencies in detect set */
 	uint32_t tone_duration_ms;      /* Duration of generated tones */
+	bool enable_tone_generation;    /* Enable/disable tone generation */
 } config = {
 	.send_frequencies = NULL,
 	.num_send_frequencies = 0,
@@ -113,7 +114,8 @@ static struct {
 	.num_detect_frequencies = 0,
 	.num_detect_low = 0,
 	.num_detect_high = 0,
-	.tone_duration_ms = 30   /* 50ms tone (increased for testing) */
+	.tone_duration_ms = 30,   /* 50ms tone (increased for testing) */
+	.enable_tone_generation = false  /* Default: disabled */
 };
 
 static void enc_destructor(void *arg)
@@ -344,8 +346,14 @@ static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
 	sampv = (int16_t *)af->sampv;
 	now = tmr_jiffies();
 
-	/* Check if we should start a new tone */
-	if (!st->gen.active && config.num_send_pairs > 0) {
+	/* Stop any active tone if generation is disabled */
+	if (!config.enable_tone_generation && st->gen.active) {
+		st->gen.active = false;
+		st->gen.last_tone_end_time = now;
+	}
+
+	/* Check if we should start a new tone (only if generation is enabled) */
+	if (config.enable_tone_generation && !st->gen.active && config.num_send_pairs > 0) {
 		uint64_t time_since_last_tone = now - st->gen.last_tone_end_time;
 		uint64_t spacing_ms = 5000;  /* 5 seconds between tones */
 
@@ -367,8 +375,8 @@ static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
 		}
 	}
 
-	/* Generate tone if active */
-	if (st->gen.active) {
+	/* Generate tone if active and generation is enabled */
+	if (config.enable_tone_generation && st->gen.active) {
 		uint64_t elapsed_ms = (now - st->gen.start_time);
 
 		if (elapsed_ms >= st->gen.duration_ms) {
@@ -743,9 +751,14 @@ static int module_init(void)
 		}
 	}
 
+	/* Read configuration parameter for tone generation */
+	conf_get_bool(conf_cur(), "tone_generation",
+		      &config.enable_tone_generation);
+
 	aufilt_register(baresip_aufiltl(), &tonedetect);
-	info("tonedetect: module loaded - %zu low + %zu high frequencies = %zu tone IDs\n",
-	     config.num_low_frequencies, config.num_high_frequencies, config.num_send_pairs);
+	info("tonedetect: module loaded - %zu low + %zu high frequencies = %zu tone IDs, generation=%s\n",
+	     config.num_low_frequencies, config.num_high_frequencies, config.num_send_pairs,
+	     config.enable_tone_generation ? "enabled" : "disabled");
 
 	return 0;
 }
