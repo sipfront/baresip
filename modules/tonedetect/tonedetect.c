@@ -6,6 +6,8 @@
 
 #include <math.h>
 #include <stdint.h>
+#include <string.h>
+#include <sys/time.h>
 #include <re.h>
 #include <rem.h>
 #include <baresip.h>
@@ -62,6 +64,7 @@ struct tonedetect_st {
 		size_t ramp_samples;
 		size_t current_tone_index; /* index in pair-list */
 		size_t tone_id;  /* ID of currently active tone */
+		double first_packet_timestamp;  /* Unix timestamp when first packet with tone is generated */
 	} gen;
 
 	/* Tone detection (decoder) */
@@ -80,6 +83,7 @@ struct tonedetect_st {
 		double *window;            /* Window coefficients (Hamming) */
 		size_t candidate_pair_index;
 		uint8_t candidate_count;
+		double first_packet_timestamp;  /* Unix timestamp when first packet with tone is decoded */
 		uint64_t last_emit_time;
 		size_t last_emit_index;    /* 0-based index */
 		bool last_emit_valid;
@@ -116,6 +120,15 @@ static struct {
 	.num_detect_high = 0,
 	.tone_duration_ms = 30,   /* 50ms tone (increased for testing) */
 	.enable_tone_generation = false  /* Default: disabled */
+};
+
+/* Global state to track if call is ready for tone generation/detection */
+static struct {
+	bool call_established;  /* CALL_ESTABLISHED event received */
+	bool rtp_established;   /* CALL_RTPESTAB event received (for audio) */
+} tonedetect_call_state = {
+	.call_established = false,
+	.rtp_established = false
 };
 
 static void enc_destructor(void *arg)
@@ -192,6 +205,7 @@ static int encode_update(struct aufilt_enc_st **stp, void **ctx,
 	st->gen.frequency2 = 0;
 	st->gen.duration_ms = config.tone_duration_ms;
 	st->gen.last_tone_end_time = 0;
+	st->gen.first_packet_timestamp = 0.0;
 	st->gen.phase = 0.0;
 	st->gen.phase2 = 0.0;
 	st->gen.srate = prm->srate;
@@ -246,6 +260,7 @@ static int decode_update(struct aufilt_dec_st **stp, void **ctx,
 	st->det.hop_count = 0;
 	st->det.candidate_pair_index = 0;
 	st->det.candidate_count = 0;
+	st->det.first_packet_timestamp = 0.0;
 	st->det.last_emit_time = 0;
 	st->det.last_emit_index = 0;
 	st->det.last_emit_valid = false;
@@ -324,13 +339,18 @@ static void start_tone_generation(struct tonedetect_st *st,
 	if (st->gen.ramp_samples * 2 > st->gen.total_samples)
 		st->gen.ramp_samples = st->gen.total_samples / 2;
 
-	info("tonedetect: tone start: frequency=%u frequency2=%u duration=%u tone_id=%zu\n",
-	     freq1, freq2, st->gen.duration_ms, tone_id);
+	/* Capture Unix timestamp with microsecond precision when first packet with tone is generated */
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+	st->gen.first_packet_timestamp = (double)tv.tv_sec + (double)tv.tv_usec / 1000000.0;
 
-	/* Emit event when tone starts */
+	info("tonedetect: tone start: frequency=%u frequency2=%u duration=%u tone_id=%zu timestamp=%.6f\n",
+	     freq1, freq2, st->gen.duration_ms, tone_id, st->gen.first_packet_timestamp);
+
+	/* Emit event when tone starts - use timestamp of first packet */
 	bevent_app_emit(UA_EVENT_AUDIO_LATENCY_OUTGOING, NULL,
-			"frequency=%u frequency2=%u duration=%u tone_id=%zu",
-			freq1, freq2, st->gen.duration_ms, tone_id);
+			"tone_id=%zu timestamp=%.6f",
+			tone_id, st->gen.first_packet_timestamp);
 }
 
 static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
@@ -352,8 +372,9 @@ static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
 		st->gen.last_tone_end_time = now;
 	}
 
-	/* Check if we should start a new tone (only if generation is enabled) */
-	if (config.enable_tone_generation && !st->gen.active && config.num_send_pairs > 0) {
+	/* Check if we should start a new tone (only if generation is enabled and call is ready) */
+	if (config.enable_tone_generation && tonedetect_call_state.call_established && tonedetect_call_state.rtp_established &&
+	    !st->gen.active && config.num_send_pairs > 0) {
 		uint64_t time_since_last_tone = now - st->gen.last_tone_end_time;
 		uint64_t spacing_ms = 5000;  /* 5 seconds between tones */
 
@@ -445,6 +466,11 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 
 	if (!st || !af || st->det.num_frequencies == 0 ||
 	    st->det.detection_window_samples == 0) {
+		return 0;
+	}
+
+	/* Only detect tones if call is established and RTP is established */
+	if (!tonedetect_call_state.call_established || !tonedetect_call_state.rtp_established) {
 		return 0;
 	}
 
@@ -554,6 +580,7 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 
 			if (!passes) {
 				st->det.candidate_count = 0;
+				st->det.first_packet_timestamp = 0.0;
 				continue;
 			}
 
@@ -572,6 +599,7 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			if (a_is_low == b_is_low) {
 				/* Both from same set - reject this detection early */
 				st->det.candidate_count = 0;
+				st->det.first_packet_timestamp = 0.0;
 				continue;
 			}
 
@@ -594,6 +622,10 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			    st->det.candidate_pair_index != pair_index) {
 				st->det.candidate_pair_index = pair_index;
 				st->det.candidate_count = 1;
+				/* Capture Unix timestamp with microsecond precision when first packet with tone is decoded */
+				struct timeval tv;
+				gettimeofday(&tv, NULL);
+				st->det.first_packet_timestamp = (double)tv.tv_sec + (double)tv.tv_usec / 1000000.0;
 			}
 			else if (st->det.candidate_count < 255) {
 				st->det.candidate_count++;
@@ -638,11 +670,14 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			if (config_idx1 == (size_t)-1 || config_idx2 == (size_t)-1 ||
 			    config.num_detect_frequencies != st->det.num_frequencies) {
 				/* Frequencies don't match config - report as unidentified */
+				struct timeval tv;
+				gettimeofday(&tv, NULL);
+				double unix_timestamp = (double)tv.tv_sec + (double)tv.tv_usec / 1000000.0;
 				info("tonedetect: tone detect (unidentified): frequency=%u frequency2=%u magnitude=%.3f\n",
 				     detected_f1, detected_f2, magnitude);
 				bevent_app_emit(UA_EVENT_AUDIO_LATENCY_INCOMING, NULL,
-						"frequency=%u frequency2=%u magnitude=%.3f tone_id=0",
-						detected_f1, detected_f2, magnitude);
+						"magnitude=%.3f tone_id=0 timestamp=%.6f",
+						magnitude, unix_timestamp);
 				continue;
 			}
 
@@ -660,11 +695,14 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			}
 			else {
 				/* Both are low or both are high - invalid for this scheme */
+				struct timeval tv;
+				gettimeofday(&tv, NULL);
+				double unix_timestamp = (double)tv.tv_sec + (double)tv.tv_usec / 1000000.0;
 				info("tonedetect: tone detect (invalid pair): frequency=%u frequency2=%u (both low or both high)\n",
 				     detected_f1, detected_f2);
 				bevent_app_emit(UA_EVENT_AUDIO_LATENCY_INCOMING, NULL,
-						"frequency=%u frequency2=%u magnitude=%.3f tone_id=0",
-						detected_f1, detected_f2, magnitude);
+						"magnitude=%.3f tone_id=0 timestamp=%.6f",
+						magnitude, unix_timestamp);
 				continue;
 			}
 
@@ -674,12 +712,23 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			if (low_idx >= config.num_detect_low || high_idx >= config.num_detect_high)
 				tone_id = 0;
 
-			info("tonedetect: tone detect: frequency=%u frequency2=%u magnitude=%.3f tone_id=%zu (low_idx=%zu high_idx=%zu)\n",
-			     detected_f1, detected_f2, magnitude, tone_id, low_idx, high_idx);
+			/* Use timestamp of first packet with tone (captured when candidate was first detected) */
+			double first_packet_timestamp = st->det.first_packet_timestamp > 0.0 ? 
+				st->det.first_packet_timestamp : 0.0;
+			
+			/* Fallback: if timestamp not set, capture current time */
+			if (first_packet_timestamp <= 0.0) {
+				struct timeval tv;
+				gettimeofday(&tv, NULL);
+				first_packet_timestamp = (double)tv.tv_sec + (double)tv.tv_usec / 1000000.0;
+			}
+
+			info("tonedetect: tone detect: frequency=%u frequency2=%u magnitude=%.3f tone_id=%zu (low_idx=%zu high_idx=%zu) timestamp=%.6f\n",
+			     detected_f1, detected_f2, magnitude, tone_id, low_idx, high_idx, first_packet_timestamp);
 
 			bevent_app_emit(UA_EVENT_AUDIO_LATENCY_INCOMING, NULL,
-					"frequency=%u frequency2=%u magnitude=%.3f tone_id=%zu",
-					detected_f1, detected_f2, magnitude, tone_id);
+					"magnitude=%.3f tone_id=%zu timestamp=%.6f",
+					magnitude, tone_id, first_packet_timestamp);
 
 			st->det.last_emit_time = now;
 			st->det.last_emit_index = pair_index;
@@ -688,6 +737,44 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 	}
 
 	return 0;
+}
+
+/* Event handler for call events */
+static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
+{
+	struct call *call = bevent_get_call(event);
+	const char *prm = bevent_get_text(event);
+	(void)arg;
+
+	if (!call)
+		return;
+
+	switch (ev) {
+	case UA_EVENT_CALL_ESTABLISHED:
+		tonedetect_call_state.call_established = true;
+		info("tonedetect: CALL_ESTABLISHED - call ready for tone generation/detection\n");
+		break;
+
+	case UA_EVENT_CALL_RTPESTAB:
+		/* Only enable if it's an audio stream */
+		if (prm && strstr(prm, "audio")) {
+			tonedetect_call_state.rtp_established = true;
+			info("tonedetect: CALL_RTPESTAB (audio) - RTP ready for tone generation/detection\n");
+		}
+		break;
+
+	case UA_EVENT_CALL_CLOSED:
+	case UA_EVENT_CALL_ENDED_LOCAL:
+	case UA_EVENT_CALL_ENDED_REMOTE:
+		/* Reset state when call ends */
+		tonedetect_call_state.call_established = false;
+		tonedetect_call_state.rtp_established = false;
+		info("tonedetect: Call ended - resetting state\n");
+		break;
+
+	default:
+		break;
+	}
 }
 
 static struct aufilt tonedetect = {
@@ -756,6 +843,10 @@ static int module_init(void)
 		      &config.enable_tone_generation);
 
 	aufilt_register(baresip_aufiltl(), &tonedetect);
+	
+	/* Register event handler for call events */
+	bevent_register(event_handler, NULL);
+	
 	info("tonedetect: module loaded - %zu low + %zu high frequencies = %zu tone IDs, generation=%s\n",
 	     config.num_low_frequencies, config.num_high_frequencies, config.num_send_pairs,
 	     config.enable_tone_generation ? "enabled" : "disabled");
@@ -765,6 +856,13 @@ static int module_init(void)
 
 static int module_close(void)
 {
+	/* Unregister event handler */
+	bevent_unregister(event_handler);
+	
+	/* Reset call state */
+	tonedetect_call_state.call_established = false;
+	tonedetect_call_state.rtp_established = false;
+	
 	mem_deref(config.send_frequencies);
 	mem_deref(config.send_pair_a);
 	mem_deref(config.send_pair_b);
