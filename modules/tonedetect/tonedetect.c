@@ -135,7 +135,7 @@ static void enc_destructor(void *arg)
 {
 	struct tonedetect_st *st = arg;
 	list_unlink(&st->u.eaf.le);
-	mem_deref(st);
+	/* Note: mem_deref(st) is called automatically by the mem system */
 }
 
 static void dec_destructor(void *arg)
@@ -148,7 +148,7 @@ static void dec_destructor(void *arg)
 	mem_deref(st->det.goertzel_q2);
 	mem_deref(st->det.window);
 	mem_deref(st->det.ring);
-	mem_deref(st);
+	/* Note: mem_deref(st) is called automatically by the mem system */
 }
 
 static size_t pair_index_from_two(size_t i, size_t j, size_t n)
@@ -746,33 +746,48 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 	const char *prm = bevent_get_text(event);
 	(void)arg;
 
-	if (!call)
-		return;
-
 	switch (ev) {
 	case UA_EVENT_CALL_ESTABLISHED:
-		tonedetect_call_state.call_established = true;
-		info("tonedetect: CALL_ESTABLISHED - call ready for tone generation/detection\n");
+		/* Only set state if we have a valid call */
+		if (call) {
+			tonedetect_call_state.call_established = true;
+			info("tonedetect: CALL_ESTABLISHED - call ready for tone generation/detection\n");
+		}
 		break;
 
 	case UA_EVENT_CALL_RTPESTAB:
-		/* Only enable if it's an audio stream */
+		/* Only enable if it's an audio stream - call may not be available */
 		if (prm && strstr(prm, "audio")) {
 			tonedetect_call_state.rtp_established = true;
 			info("tonedetect: CALL_RTPESTAB (audio) - RTP ready for tone generation/detection\n");
 		}
 		break;
 
+	case UA_EVENT_CALL_HOLD:
+		/* When call is put on hold, pause tone generation/detection */
+		tonedetect_call_state.rtp_established = false;
+		info("tonedetect: CALL_HOLD - pausing tone generation/detection\n");
+		break;
+
+	case UA_EVENT_CALL_RESUME:
+		/* When call is resumed, re-enable if call is still established */
+		if (tonedetect_call_state.call_established) {
+			/* RTP will be re-established via CALL_RTPESTAB event */
+			info("tonedetect: CALL_RESUME - waiting for RTP re-establishment\n");
+		}
+		break;
+
 	case UA_EVENT_CALL_CLOSED:
 	case UA_EVENT_CALL_ENDED_LOCAL:
 	case UA_EVENT_CALL_ENDED_REMOTE:
-		/* Reset state when call ends */
+		/* Reset state when call ends - don't require call object as it may be freed */
 		tonedetect_call_state.call_established = false;
 		tonedetect_call_state.rtp_established = false;
 		info("tonedetect: Call ended - resetting state\n");
 		break;
 
 	default:
+		/* Ignore all other events */
 		break;
 	}
 }
