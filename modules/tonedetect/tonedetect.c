@@ -28,6 +28,7 @@
 #define DETECT_MAX_CONFIRM_DELAY_MS  25.0  /* reject/re-anchor stale first_seen timestamps */
 #define DETECT_DUAL_BALANCE_MIN      0.55  /* second peak must be close enough to first */
 #define DETECT_TOP2_SHARE_MIN        0.78  /* top 2 peaks must dominate tracked target energy */
+#define RTP_WARMUP_SUPPRESS_MS       800   /* ignore startup transients right after RTP establish */
 
 /* Sender tone shaping to reduce spectral leakage */
 #define TONE_RAMP_MS                 2     /* fade-in/out (2ms) for 15ms tones - reduces spectral leakage */
@@ -130,9 +131,11 @@ static struct {
 static struct {
 	bool call_established;  /* CALL_ESTABLISHED event received */
 	bool rtp_established;   /* CALL_RTPESTAB event received (for audio) */
+	uint64_t rtp_established_time; /* jiffies when audio RTP became established */
 } tonedetect_call_state = {
 	.call_established = false,
-	.rtp_established = false
+	.rtp_established = false,
+	.rtp_established_time = 0
 };
 
 static void enc_destructor(void *arg)
@@ -369,12 +372,16 @@ static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
 	size_t i;
 	int16_t *sampv;
 	uint64_t now;
+	bool rtp_warmup_done;
 
 	if (!st || !af)
 		return EINVAL;
 
 	sampv = (int16_t *)af->sampv;
 	now = tmr_jiffies();
+	rtp_warmup_done = tonedetect_call_state.rtp_established_time != 0 &&
+			  (now - tonedetect_call_state.rtp_established_time) >=
+				  RTP_WARMUP_SUPPRESS_MS;
 
 	/* Stop any active tone if generation is disabled */
 	if (!config.enable_tone_generation && st->gen.active) {
@@ -384,7 +391,7 @@ static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
 
 	/* Check if we should start a new tone (only if generation is enabled and call is ready) */
 	if (config.enable_tone_generation && tonedetect_call_state.call_established && tonedetect_call_state.rtp_established &&
-	    !st->gen.active && config.num_send_pairs > 0) {
+	    rtp_warmup_done && !st->gen.active && config.num_send_pairs > 0) {
 		uint64_t time_since_last_tone = now - st->gen.last_tone_end_time;
 		uint64_t spacing_ms = 5000;  /* 5 seconds between tones */
 
@@ -475,6 +482,7 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 	struct tonedetect_st *st = (struct tonedetect_st *)aufilt_dec_st;
 	size_t i, j;
 	int16_t *sampv;
+	const uint64_t now = tmr_jiffies();
 
 	if (!st || !af || st->det.num_frequencies == 0 ||
 	    st->det.detection_window_samples == 0) {
@@ -483,6 +491,11 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 
 	/* Only detect tones if call is established and RTP is established */
 	if (!tonedetect_call_state.call_established || !tonedetect_call_state.rtp_established) {
+		return 0;
+	}
+	if (tonedetect_call_state.rtp_established_time == 0 ||
+	    (now - tonedetect_call_state.rtp_established_time) <
+		    RTP_WARMUP_SUPPRESS_MS) {
 		return 0;
 	}
 
@@ -782,6 +795,7 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 		/* Only enable if it's an audio stream - call may not be available */
 		if (prm && strstr(prm, "audio")) {
 			tonedetect_call_state.rtp_established = true;
+			tonedetect_call_state.rtp_established_time = tmr_jiffies();
 			info("tonedetect: CALL_RTPESTAB (audio) - RTP ready for tone generation/detection\n");
 		}
 		break;
@@ -789,6 +803,7 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 	case UA_EVENT_CALL_HOLD:
 		/* When call is put on hold, pause tone generation/detection */
 		tonedetect_call_state.rtp_established = false;
+		tonedetect_call_state.rtp_established_time = 0;
 		info("tonedetect: CALL_HOLD - pausing tone generation/detection\n");
 		break;
 
@@ -806,6 +821,7 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 		/* Reset state when call ends - don't require call object as it may be freed */
 		tonedetect_call_state.call_established = false;
 		tonedetect_call_state.rtp_established = false;
+		tonedetect_call_state.rtp_established_time = 0;
 		info("tonedetect: Call ended - resetting state\n");
 		break;
 
@@ -900,6 +916,7 @@ static int module_close(void)
 	/* Reset call state */
 	tonedetect_call_state.call_established = false;
 	tonedetect_call_state.rtp_established = false;
+	tonedetect_call_state.rtp_established_time = 0;
 	
 	mem_deref(config.send_frequencies);
 	mem_deref(config.send_pair_a);
