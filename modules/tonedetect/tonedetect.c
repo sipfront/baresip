@@ -14,16 +14,20 @@
 
 #define PI 3.14159265358979323846
 #define TONE_AMPLITUDE 0.3f
-#define DETECTION_WINDOW_MS 50   /* 20ms window (for 50ms tone detection) */
-#define DETECTION_HOP_MS    10    /* evaluate every 10ms (overlapping windows reduces missed tones) */
+#define DETECTION_WINDOW_MS 20   /* shorter window for lower timestamp quantization */
+#define DETECTION_HOP_MS    2    /* evaluate every 2ms for finer detection timing */
 
 /* Detection tuning (receiver) - balanced for reliable detection */
-#define DETECT_RATIO_THRESHOLD       0.18  /* stricter threshold to reduce false positives */
-#define DETECT_PEAK_SEPARATION       1.35  /* require better peak separation to reduce false positives */
-#define DETECT_MIN_BLOCK_ENERGY      8.0e8 /* higher energy requirement */
-#define DETECT_CONSECUTIVE_BLOCKS    3     /* require 3 consecutive blocks for more reliable detection */
+#define DETECT_RATIO_THRESHOLD       0.15  /* stricter for real-audio environments */
+#define DETECT_PEAK_SEPARATION       1.30  /* stronger separation from other peaks */
+#define DETECT_MIN_BLOCK_ENERGY      2.5e8 /* scaled down for shorter windows */
+#define DETECT_CONSECUTIVE_BLOCKS    3     /* add temporal stability against speech/music transients */
 #define DETECT_SUPPRESS_MS           3000  /* suppress repeat events */
-#define DETECT_MIN_MAGNITUDE         100.0  /* higher magnitude threshold to filter weak false positives */
+#define DETECT_MIN_MAGNITUDE         80.0   /* reduce weak false positives */
+#define DETECT_FIRST_SEEN_HOLD_MS    120   /* keep first_seen across short same-pair dropouts */
+#define DETECT_MAX_CONFIRM_DELAY_MS  25.0  /* reject/re-anchor stale first_seen timestamps */
+#define DETECT_DUAL_BALANCE_MIN      0.55  /* second peak must be close enough to first */
+#define DETECT_TOP2_SHARE_MIN        0.78  /* top 2 peaks must dominate tracked target energy */
 
 /* Sender tone shaping to reduce spectral leakage */
 #define TONE_RAMP_MS                 2     /* fade-in/out (2ms) for 15ms tones - reduces spectral leakage */
@@ -64,7 +68,7 @@ struct tonedetect_st {
 		size_t ramp_samples;
 		size_t current_tone_index; /* index in pair-list */
 		size_t tone_id;  /* ID of currently active tone */
-		double first_packet_timestamp;  /* Unix timestamp when first packet with tone is generated */
+		double first_packet_timestamp;  /* Host timestamp when tone generation starts */
 	} gen;
 
 	/* Tone detection (decoder) */
@@ -118,7 +122,7 @@ static struct {
 	.num_detect_frequencies = 0,
 	.num_detect_low = 0,
 	.num_detect_high = 0,
-	.tone_duration_ms = 30,   /* 50ms tone (increased for testing) */
+	.tone_duration_ms = 80,   /* longer tone improves robust lock with short windows */
 	.enable_tone_generation = false  /* Default: disabled */
 };
 
@@ -180,6 +184,12 @@ static void goertzel_process(double *q1, double *q2, double coeff,
 	*q1 = q0;
 }
 
+static double unix_time_now(void)
+{
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+	return (double)tv.tv_sec + (double)tv.tv_usec / 1000000.0;
+}
 
 static int encode_update(struct aufilt_enc_st **stp, void **ctx,
 			 const struct aufilt *af, struct aufilt_prm *prm,
@@ -320,7 +330,8 @@ static int decode_update(struct aufilt_dec_st **stp, void **ctx,
  */
 static void start_tone_generation(struct tonedetect_st *st,
 				  uint32_t freq1, uint32_t freq2,
-				  size_t tone_id, uint32_t srate)
+				  size_t tone_id, uint32_t srate,
+				  double tone_start_host_ts)
 {
 	if (!st)
 		return;
@@ -339,15 +350,14 @@ static void start_tone_generation(struct tonedetect_st *st,
 	if (st->gen.ramp_samples * 2 > st->gen.total_samples)
 		st->gen.ramp_samples = st->gen.total_samples / 2;
 
-	/* Capture Unix timestamp with microsecond precision when first packet with tone is generated */
-	struct timeval tv;
-	gettimeofday(&tv, NULL);
-	st->gen.first_packet_timestamp = (double)tv.tv_sec + (double)tv.tv_usec / 1000000.0;
+	/* Host timestamp when we start generating this tone. */
+	st->gen.first_packet_timestamp = tone_start_host_ts;
 
-	info("tonedetect: tone start: frequency=%u frequency2=%u duration=%u tone_id=%zu timestamp=%.6f\n",
-	     freq1, freq2, st->gen.duration_ms, tone_id, st->gen.first_packet_timestamp);
+	info("tonedetect: tone start: frequency=%u frequency2=%u duration=%u tone_id=%zu ref=tone_start timestamp=%.6f\n",
+	     freq1, freq2, st->gen.duration_ms, tone_id,
+	     st->gen.first_packet_timestamp);
 
-	/* Emit event when tone starts - use timestamp of first packet */
+	/* Emit event using a deterministic reference point: first generated sample. */
 	bevent_app_emit(UA_EVENT_AUDIO_LATENCY_OUTGOING, NULL,
 			"tone_id=%zu timestamp=%.6f",
 			tone_id, st->gen.first_packet_timestamp);
@@ -388,8 +398,10 @@ static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
 			const uint8_t ib = config.send_pair_b[pair_index];
 			const uint32_t f1 = config.send_frequencies[ia];
 			const uint32_t f2 = config.send_frequencies[ib];
+			const double tone_start_unix_ts = unix_time_now();
 
-			start_tone_generation(st, f1, f2, tone_id, af->srate);
+			start_tone_generation(st, f1, f2, tone_id, af->srate,
+					      tone_start_unix_ts);
 
 			st->gen.current_tone_index =
 				(st->gen.current_tone_index + 1) % config.num_send_pairs;
@@ -506,6 +518,7 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			double best_ratio = 0.0;
 			double second_ratio = 0.0;
 			double third_ratio = 0.0;
+			double sum_ratio = 0.0;
 			double best_power = 0.0;
 			double second_power = 0.0;
 			size_t best_index = (size_t)-1;
@@ -543,6 +556,7 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 					const double c = st->det.goertzel_coeffs[j];
 					const double power = q1 * q1 + q2 * q2 - q1 * q2 * c;
 					const double ratio = power / block_energy;
+					sum_ratio += ratio;
 
 					if (ratio > best_ratio) {
 						third_ratio = second_ratio;
@@ -571,16 +585,21 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			}
 
 			/* Dual-tone requirement: top2 must both be present, and separated from others */
+			const double dual_balance =
+				(best_ratio > 0.0) ? (second_ratio / best_ratio) : 0.0;
+			const double top2_share =
+				(sum_ratio > 0.0) ? ((best_ratio + second_ratio) / sum_ratio) : 0.0;
 			const bool passes =
 				(best_ratio >= DETECT_RATIO_THRESHOLD) &&
 				(second_ratio >= DETECT_RATIO_THRESHOLD) &&
+				(dual_balance >= DETECT_DUAL_BALANCE_MIN) &&
+				(top2_share >= DETECT_TOP2_SHARE_MIN) &&
 				(third_ratio <= 0.0 ||
 				 (best_ratio >= (third_ratio * DETECT_PEAK_SEPARATION) &&
 				  second_ratio >= (third_ratio * DETECT_PEAK_SEPARATION)));
 
 			if (!passes) {
 				st->det.candidate_count = 0;
-				st->det.first_packet_timestamp = 0.0;
 				continue;
 			}
 
@@ -599,7 +618,6 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			if (a_is_low == b_is_low) {
 				/* Both from same set - reject this detection early */
 				st->det.candidate_count = 0;
-				st->det.first_packet_timestamp = 0.0;
 				continue;
 			}
 
@@ -620,12 +638,18 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			/* Debounce on the pair-index */
 			if (st->det.candidate_count == 0 ||
 			    st->det.candidate_pair_index != pair_index) {
+				const double now_ts = unix_time_now();
+				const bool same_pair_reacquire =
+					(st->det.candidate_pair_index == pair_index) &&
+					(st->det.first_packet_timestamp > 0.0) &&
+					((now_ts - st->det.first_packet_timestamp) * 1000.0 <=
+					 DETECT_FIRST_SEEN_HOLD_MS);
+
 				st->det.candidate_pair_index = pair_index;
 				st->det.candidate_count = 1;
-				/* Capture Unix timestamp with microsecond precision when first packet with tone is decoded */
-				struct timeval tv;
-				gettimeofday(&tv, NULL);
-				st->det.first_packet_timestamp = (double)tv.tv_sec + (double)tv.tv_usec / 1000000.0;
+				/* Keep first_seen for short same-pair dropouts to avoid jumpy latency. */
+				if (!same_pair_reacquire)
+					st->det.first_packet_timestamp = now_ts;
 			}
 			else if (st->det.candidate_count < 255) {
 				st->det.candidate_count++;
@@ -650,6 +674,21 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			if (mag1 < DETECT_MIN_MAGNITUDE || mag2 < DETECT_MIN_MAGNITUDE) {
 				continue;
 			}
+			const double detect_timestamp = unix_time_now();
+			const double first_seen_timestamp =
+				(st->det.first_packet_timestamp > 0.0)
+					? st->det.first_packet_timestamp
+					: detect_timestamp;
+			const double confirm_delay_ms =
+				(detect_timestamp - first_seen_timestamp) * 1000.0;
+
+			/* Guard against stale first_seen causing high-latency outliers. */
+			if (confirm_delay_ms < 0.0 ||
+			    confirm_delay_ms > DETECT_MAX_CONFIRM_DELAY_MS) {
+				st->det.first_packet_timestamp = detect_timestamp;
+				st->det.candidate_count = 1;
+				continue;
+			}
 
 			/* Calculate tone_id based on detected frequencies */
 			/* First, find the indices of detected frequencies in config arrays */
@@ -670,14 +709,11 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			if (config_idx1 == (size_t)-1 || config_idx2 == (size_t)-1 ||
 			    config.num_detect_frequencies != st->det.num_frequencies) {
 				/* Frequencies don't match config - report as unidentified */
-				struct timeval tv;
-				gettimeofday(&tv, NULL);
-				double unix_timestamp = (double)tv.tv_sec + (double)tv.tv_usec / 1000000.0;
 				info("tonedetect: tone detect (unidentified): frequency=%u frequency2=%u magnitude=%.3f\n",
 				     detected_f1, detected_f2, magnitude);
 				bevent_app_emit(UA_EVENT_AUDIO_LATENCY_INCOMING, NULL,
 						"magnitude=%.3f tone_id=0 timestamp=%.6f",
-						magnitude, unix_timestamp);
+						magnitude, first_seen_timestamp);
 				continue;
 			}
 
@@ -695,14 +731,11 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			}
 			else {
 				/* Both are low or both are high - invalid for this scheme */
-				struct timeval tv;
-				gettimeofday(&tv, NULL);
-				double unix_timestamp = (double)tv.tv_sec + (double)tv.tv_usec / 1000000.0;
 				info("tonedetect: tone detect (invalid pair): frequency=%u frequency2=%u (both low or both high)\n",
 				     detected_f1, detected_f2);
 				bevent_app_emit(UA_EVENT_AUDIO_LATENCY_INCOMING, NULL,
 						"magnitude=%.3f tone_id=0 timestamp=%.6f",
-						magnitude, unix_timestamp);
+						magnitude, first_seen_timestamp);
 				continue;
 			}
 
@@ -712,23 +745,13 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			if (low_idx >= config.num_detect_low || high_idx >= config.num_detect_high)
 				tone_id = 0;
 
-			/* Use timestamp of first packet with tone (captured when candidate was first detected) */
-			double first_packet_timestamp = st->det.first_packet_timestamp > 0.0 ? 
-				st->det.first_packet_timestamp : 0.0;
-			
-			/* Fallback: if timestamp not set, capture current time */
-			if (first_packet_timestamp <= 0.0) {
-				struct timeval tv;
-				gettimeofday(&tv, NULL);
-				first_packet_timestamp = (double)tv.tv_sec + (double)tv.tv_usec / 1000000.0;
-			}
-
-			info("tonedetect: tone detect: frequency=%u frequency2=%u magnitude=%.3f tone_id=%zu (low_idx=%zu high_idx=%zu) timestamp=%.6f\n",
-			     detected_f1, detected_f2, magnitude, tone_id, low_idx, high_idx, first_packet_timestamp);
+			info("tonedetect: tone detect: frequency=%u frequency2=%u magnitude=%.3f tone_id=%zu (low_idx=%zu high_idx=%zu) ref=rx_first_seen timestamp=%.6f detected_timestamp=%.6f\n",
+			     detected_f1, detected_f2, magnitude, tone_id, low_idx, high_idx,
+			     first_seen_timestamp, detect_timestamp);
 
 			bevent_app_emit(UA_EVENT_AUDIO_LATENCY_INCOMING, NULL,
 					"magnitude=%.3f tone_id=%zu timestamp=%.6f",
-					magnitude, tone_id, first_packet_timestamp);
+					magnitude, tone_id, first_seen_timestamp);
 
 			st->det.last_emit_time = now;
 			st->det.last_emit_index = pair_index;
