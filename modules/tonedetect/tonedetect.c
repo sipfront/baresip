@@ -28,7 +28,7 @@
 #define DETECT_MAX_CONFIRM_DELAY_MS  25.0  /* reject/re-anchor stale first_seen timestamps */
 #define DETECT_DUAL_BALANCE_MIN      0.55  /* second peak must be close enough to first */
 #define DETECT_TOP2_SHARE_MIN        0.78  /* top 2 peaks must dominate tracked target energy */
-#define RTP_WARMUP_SUPPRESS_MS       800   /* ignore startup transients right after RTP establish */
+#define RTP_WARMUP_SUPPRESS_MS       1000  /* ignore startup transients right after RTP establish */
 
 /* Sender tone shaping to reduce spectral leakage */
 #define TONE_RAMP_MS                 2     /* fade-in/out (2ms) for 15ms tones - reduces spectral leakage */
