@@ -18,17 +18,18 @@
 #define DETECTION_HOP_MS    2    /* evaluate every 2ms for finer detection timing */
 
 /* Detection tuning (receiver) - balanced for reliable detection */
-#define DETECT_RATIO_THRESHOLD       0.15  /* stricter for real-audio environments */
-#define DETECT_PEAK_SEPARATION       1.30  /* stronger separation from other peaks */
-#define DETECT_MIN_BLOCK_ENERGY      2.5e8 /* scaled down for shorter windows */
+#define DETECT_RATIO_THRESHOLD       0.17  /* stricter for real-audio environments */
+#define DETECT_PEAK_SEPARATION       1.35  /* stronger separation from other peaks */
+#define DETECT_MIN_BLOCK_ENERGY      5.0e8 /* raise energy floor to reject normal program audio */
 #define DETECT_CONSECUTIVE_BLOCKS    3     /* add temporal stability against speech/music transients */
 #define DETECT_SUPPRESS_MS           3000  /* suppress repeat events */
-#define DETECT_MIN_MAGNITUDE         80.0   /* reduce weak false positives */
-#define DETECT_FIRST_SEEN_HOLD_MS    120   /* keep first_seen across short same-pair dropouts */
+#define DETECT_MIN_MAGNITUDE         95.0   /* reduce weak false positives */
+#define DETECT_FIRST_SEEN_HOLD_MS    0     /* disable first_seen carry-over to avoid early bias */
 #define DETECT_MAX_CONFIRM_DELAY_MS  25.0  /* reject/re-anchor stale first_seen timestamps */
-#define DETECT_DUAL_BALANCE_MIN      0.55  /* second peak must be close enough to first */
-#define DETECT_TOP2_SHARE_MIN        0.78  /* top 2 peaks must dominate tracked target energy */
+#define DETECT_DUAL_BALANCE_MIN      0.65  /* second peak must be close enough to first */
+#define DETECT_TOP2_SHARE_MIN        0.85  /* top 2 peaks must dominate tracked target energy */
 #define RTP_WARMUP_SUPPRESS_MS       1000  /* ignore startup transients right after RTP establish */
+#define TX_REF_HALF_FRAME_CORR       0.3   /* move TX timestamp slightly earlier */
 
 /* Sender tone shaping to reduce spectral leakage */
 #define TONE_RAMP_MS                 2     /* fade-in/out (2ms) for 15ms tones - reduces spectral leakage */
@@ -405,7 +406,14 @@ static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
 			const uint8_t ib = config.send_pair_b[pair_index];
 			const uint32_t f1 = config.send_frequencies[ia];
 			const uint32_t f2 = config.send_frequencies[ib];
-			const double tone_start_unix_ts = unix_time_now();
+			double tone_start_unix_ts = unix_time_now();
+			const double frame_sec =
+				(af->srate > 0 && af->ch > 0)
+					? ((double)af->sampc /
+					   ((double)af->srate * (double)af->ch))
+					: 0.0;
+			/* Emit closer to sample-time reference instead of packet-send edge. */
+			tone_start_unix_ts -= frame_sec * TX_REF_HALF_FRAME_CORR;
 
 			start_tone_generation(st, f1, f2, tone_id, af->srate,
 					      tone_start_unix_ts);
@@ -655,7 +663,8 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 				const bool same_pair_reacquire =
 					(st->det.candidate_pair_index == pair_index) &&
 					(st->det.first_packet_timestamp > 0.0) &&
-					((now_ts - st->det.first_packet_timestamp) * 1000.0 <=
+					(DETECT_FIRST_SEEN_HOLD_MS > 0 &&
+					 (now_ts - st->det.first_packet_timestamp) * 1000.0 <=
 					 DETECT_FIRST_SEEN_HOLD_MS);
 
 				st->det.candidate_pair_index = pair_index;
@@ -721,12 +730,9 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			/* Validate that we found both frequencies in config */
 			if (config_idx1 == (size_t)-1 || config_idx2 == (size_t)-1 ||
 			    config.num_detect_frequencies != st->det.num_frequencies) {
-				/* Frequencies don't match config - report as unidentified */
+				/* Ignore unidentified pairs for latency reporting. */
 				info("tonedetect: tone detect (unidentified): frequency=%u frequency2=%u magnitude=%.3f\n",
 				     detected_f1, detected_f2, magnitude);
-				bevent_app_emit(UA_EVENT_AUDIO_LATENCY_INCOMING, NULL,
-						"magnitude=%.3f tone_id=0 timestamp=%.6f",
-						magnitude, first_seen_timestamp);
 				continue;
 			}
 
@@ -743,12 +749,9 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 				high_idx = config_idx1 - config.num_detect_low;
 			}
 			else {
-				/* Both are low or both are high - invalid for this scheme */
+				/* Invalid pair for this scheme: ignore for latency reporting. */
 				info("tonedetect: tone detect (invalid pair): frequency=%u frequency2=%u (both low or both high)\n",
 				     detected_f1, detected_f2);
-				bevent_app_emit(UA_EVENT_AUDIO_LATENCY_INCOMING, NULL,
-						"magnitude=%.3f tone_id=0 timestamp=%.6f",
-						magnitude, first_seen_timestamp);
 				continue;
 			}
 
@@ -758,13 +761,13 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			if (low_idx >= config.num_detect_low || high_idx >= config.num_detect_high)
 				tone_id = 0;
 
-			info("tonedetect: tone detect: frequency=%u frequency2=%u magnitude=%.3f tone_id=%zu (low_idx=%zu high_idx=%zu) ref=rx_first_seen timestamp=%.6f detected_timestamp=%.6f\n",
+			info("tonedetect: tone detect: frequency=%u frequency2=%u magnitude=%.3f tone_id=%zu (low_idx=%zu high_idx=%zu) timestamp=%.6f first_seen=%.6f\n",
 			     detected_f1, detected_f2, magnitude, tone_id, low_idx, high_idx,
-			     first_seen_timestamp, detect_timestamp);
+			     detect_timestamp, first_seen_timestamp);
 
 			bevent_app_emit(UA_EVENT_AUDIO_LATENCY_INCOMING, NULL,
 					"magnitude=%.3f tone_id=%zu timestamp=%.6f",
-					magnitude, tone_id, first_seen_timestamp);
+					magnitude, tone_id, detect_timestamp);
 
 			st->det.last_emit_time = now;
 			st->det.last_emit_index = pair_index;
