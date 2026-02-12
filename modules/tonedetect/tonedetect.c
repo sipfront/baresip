@@ -29,7 +29,7 @@
 #define DETECT_DUAL_BALANCE_MIN      0.65  /* second peak must be close enough to first */
 #define DETECT_TOP2_SHARE_MIN        0.85  /* top 2 peaks must dominate tracked target energy */
 #define RTP_WARMUP_SUPPRESS_MS       1000  /* ignore startup transients right after RTP establish */
-#define TX_REF_HALF_FRAME_CORR       0.4   /* move TX timestamp slightly earlier */
+#define TX_REF_HALF_FRAME_CORR       0.0   /* move TX timestamp slightly earlier */
 
 /* Sender tone shaping to reduce spectral leakage */
 #define TONE_RAMP_MS                 2     /* fade-in/out (2ms) for 15ms tones - reduces spectral leakage */
@@ -374,6 +374,8 @@ static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
 	int16_t *sampv;
 	uint64_t now;
 	bool rtp_warmup_done;
+	/* Capture local timestamp when frame is being sent */
+	const double frame_send_time = unix_time_now();
 
 	if (!st || !af)
 		return EINVAL;
@@ -406,14 +408,14 @@ static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
 			const uint8_t ib = config.send_pair_b[pair_index];
 			const uint32_t f1 = config.send_frequencies[ia];
 			const uint32_t f2 = config.send_frequencies[ib];
-			double tone_start_unix_ts = unix_time_now();
+			/* Use frame send time, adjusted to reference first sample of frame */
 			const double frame_sec =
 				(af->srate > 0 && af->ch > 0)
 					? ((double)af->sampc /
 					   ((double)af->srate * (double)af->ch))
 					: 0.0;
 			/* Emit closer to sample-time reference instead of packet-send edge. */
-			tone_start_unix_ts -= frame_sec * TX_REF_HALF_FRAME_CORR;
+			double tone_start_unix_ts = frame_send_time - frame_sec * TX_REF_HALF_FRAME_CORR;
 
 			start_tone_generation(st, f1, f2, tone_id, af->srate,
 					      tone_start_unix_ts);
@@ -491,6 +493,8 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 	size_t i, j;
 	int16_t *sampv;
 	const uint64_t now = tmr_jiffies();
+	/* Capture local timestamp when frame arrives */
+	const double frame_arrival_time = unix_time_now();
 
 	if (!st || !af || st->det.num_frequencies == 0 ||
 	    st->det.detection_window_samples == 0) {
@@ -659,19 +663,23 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			/* Debounce on the pair-index */
 			if (st->det.candidate_count == 0 ||
 			    st->det.candidate_pair_index != pair_index) {
-				const double now_ts = unix_time_now();
+				/* Use frame arrival time, adjusted for sample position in frame */
+				/* This ensures first_seen uses the actual frame arrival time, not detection time */
+				const double sample_offset_sec = (double)i / ((double)af->srate * (double)af->ch);
+				const double sample_timestamp = frame_arrival_time + sample_offset_sec;
 				const bool same_pair_reacquire =
 					(st->det.candidate_pair_index == pair_index) &&
 					(st->det.first_packet_timestamp > 0.0) &&
 					(DETECT_FIRST_SEEN_HOLD_MS > 0 &&
-					 (now_ts - st->det.first_packet_timestamp) * 1000.0 <=
+					 (sample_timestamp - st->det.first_packet_timestamp) * 1000.0 <=
 					 DETECT_FIRST_SEEN_HOLD_MS);
 
 				st->det.candidate_pair_index = pair_index;
 				st->det.candidate_count = 1;
 				/* Keep first_seen for short same-pair dropouts to avoid jumpy latency. */
+				/* first_packet_timestamp uses frame arrival time for accurate latency measurement */
 				if (!same_pair_reacquire)
-					st->det.first_packet_timestamp = now_ts;
+					st->det.first_packet_timestamp = sample_timestamp;
 			}
 			else if (st->det.candidate_count < 255) {
 				st->det.candidate_count++;
@@ -696,7 +704,9 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			if (mag1 < DETECT_MIN_MAGNITUDE || mag2 < DETECT_MIN_MAGNITUDE) {
 				continue;
 			}
-			const double detect_timestamp = unix_time_now();
+			/* Use frame arrival time, adjusted for sample position in frame */
+			const double sample_offset_sec = (double)i / ((double)af->srate * (double)af->ch);
+			const double detect_timestamp = frame_arrival_time + sample_offset_sec;
 			const double first_seen_timestamp =
 				(st->det.first_packet_timestamp > 0.0)
 					? st->det.first_packet_timestamp
@@ -705,6 +715,7 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 				(detect_timestamp - first_seen_timestamp) * 1000.0;
 
 			/* Guard against stale first_seen causing high-latency outliers. */
+			/* Reset first_packet_timestamp using frame-based detect_timestamp */
 			if (confirm_delay_ms < 0.0 ||
 			    confirm_delay_ms > DETECT_MAX_CONFIRM_DELAY_MS) {
 				st->det.first_packet_timestamp = detect_timestamp;
@@ -765,9 +776,10 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			     detected_f1, detected_f2, magnitude, tone_id, low_idx, high_idx,
 			     detect_timestamp, first_seen_timestamp);
 
+			/* Use first_seen_timestamp (frame-based) for accurate latency measurement */
 			bevent_app_emit(UA_EVENT_AUDIO_LATENCY_INCOMING, NULL,
 					"magnitude=%.3f tone_id=%zu timestamp=%.6f",
-					magnitude, tone_id, detect_timestamp);
+					magnitude, tone_id, first_seen_timestamp);
 
 			st->det.last_emit_time = now;
 			st->det.last_emit_index = pair_index;
