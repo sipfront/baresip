@@ -29,7 +29,6 @@
 #define DETECT_DUAL_BALANCE_MIN      0.65  /* second peak must be close enough to first */
 #define DETECT_TOP2_SHARE_MIN        0.85  /* top 2 peaks must dominate tracked target energy */
 #define RTP_WARMUP_SUPPRESS_MS       1000  /* ignore startup transients right after RTP establish */
-#define TX_REF_HALF_FRAME_CORR       0.3   /* move TX timestamp slightly earlier */
 
 /* Sender tone shaping to reduce spectral leakage */
 #define TONE_RAMP_MS                 2     /* fade-in/out (2ms) for 15ms tones - reduces spectral leakage */
@@ -407,13 +406,6 @@ static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
 			const uint32_t f1 = config.send_frequencies[ia];
 			const uint32_t f2 = config.send_frequencies[ib];
 			double tone_start_unix_ts = unix_time_now();
-			const double frame_sec =
-				(af->srate > 0 && af->ch > 0)
-					? ((double)af->sampc /
-					   ((double)af->srate * (double)af->ch))
-					: 0.0;
-			/* Emit closer to sample-time reference instead of packet-send edge. */
-			tone_start_unix_ts -= frame_sec * TX_REF_HALF_FRAME_CORR;
 
 			start_tone_generation(st, f1, f2, tone_id, af->srate,
 					      tone_start_unix_ts);
@@ -765,9 +757,12 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			     detected_f1, detected_f2, magnitude, tone_id, low_idx, high_idx,
 			     detect_timestamp, first_seen_timestamp);
 
+			/* Report the first-valid-seen instant after confirmation.
+			 * This aligns RX reference closer to onset than "confirm now".
+			 */
 			bevent_app_emit(UA_EVENT_AUDIO_LATENCY_INCOMING, NULL,
 					"magnitude=%.3f tone_id=%zu timestamp=%.6f",
-					magnitude, tone_id, detect_timestamp);
+					magnitude, tone_id, first_seen_timestamp);
 
 			st->det.last_emit_time = now;
 			st->det.last_emit_index = pair_index;
