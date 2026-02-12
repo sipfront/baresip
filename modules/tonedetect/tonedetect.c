@@ -29,7 +29,6 @@
 #define DETECT_DUAL_BALANCE_MIN      0.65  /* second peak must be close enough to first */
 #define DETECT_TOP2_SHARE_MIN        0.85  /* top 2 peaks must dominate tracked target energy */
 #define RTP_WARMUP_SUPPRESS_MS       1000  /* ignore startup transients right after RTP establish */
-#define TX_REF_HALF_FRAME_CORR       0.0   /* move TX timestamp slightly earlier */
 
 /* Sender tone shaping to reduce spectral leakage */
 #define TONE_RAMP_MS                 2     /* fade-in/out (2ms) for 15ms tones - reduces spectral leakage */
@@ -71,6 +70,7 @@ struct tonedetect_st {
 		size_t current_tone_index; /* index in pair-list */
 		size_t tone_id;  /* ID of currently active tone */
 		double first_packet_timestamp;  /* Host timestamp when tone generation starts */
+		bool full_amplitude_reached;  /* Flag to track if full amplitude timestamp was captured */
 	} gen;
 
 	/* Tone detection (decoder) */
@@ -94,6 +94,8 @@ struct tonedetect_st {
 		size_t last_emit_index;    /* 0-based index */
 		bool last_emit_valid;
 		uint32_t srate;
+		bool full_amplitude_detected;  /* Flag to track if full amplitude timestamp was captured */
+		double peak_amplitude;  /* Track peak amplitude of detected tone for full amplitude detection */
 	} det;
 };
 
@@ -188,11 +190,12 @@ static void goertzel_process(double *q1, double *q2, double coeff,
 	*q1 = q0;
 }
 
-static double unix_time_now(void)
+static double unix_time_now_ms(void)
 {
 	struct timeval tv;
 	gettimeofday(&tv, NULL);
-	return (double)tv.tv_sec + (double)tv.tv_usec / 1000000.0;
+	/* Convert to milliseconds, then to seconds for millisecond precision */
+	return ((double)tv.tv_sec * 1000.0 + (double)tv.tv_usec / 1000.0) / 1000.0;
 }
 
 static int encode_update(struct aufilt_enc_st **stp, void **ctx,
@@ -220,6 +223,7 @@ static int encode_update(struct aufilt_enc_st **stp, void **ctx,
 	st->gen.duration_ms = config.tone_duration_ms;
 	st->gen.last_tone_end_time = 0;
 	st->gen.first_packet_timestamp = 0.0;
+	st->gen.full_amplitude_reached = false;
 	st->gen.phase = 0.0;
 	st->gen.phase2 = 0.0;
 	st->gen.srate = prm->srate;
@@ -278,6 +282,8 @@ static int decode_update(struct aufilt_dec_st **stp, void **ctx,
 	st->det.last_emit_time = 0;
 	st->det.last_emit_index = 0;
 	st->det.last_emit_valid = false;
+	st->det.full_amplitude_detected = false;
+	st->det.peak_amplitude = 0.0;
 	st->det.num_frequencies = config.num_detect_frequencies;
 
 	if (st->det.num_frequencies > 0) {
@@ -334,8 +340,7 @@ static int decode_update(struct aufilt_dec_st **stp, void **ctx,
  */
 static void start_tone_generation(struct tonedetect_st *st,
 				  uint32_t freq1, uint32_t freq2,
-				  size_t tone_id, uint32_t srate,
-				  double tone_start_host_ts)
+				  size_t tone_id, uint32_t srate)
 {
 	if (!st)
 		return;
@@ -354,17 +359,14 @@ static void start_tone_generation(struct tonedetect_st *st,
 	if (st->gen.ramp_samples * 2 > st->gen.total_samples)
 		st->gen.ramp_samples = st->gen.total_samples / 2;
 
-	/* Host timestamp when we start generating this tone. */
-	st->gen.first_packet_timestamp = tone_start_host_ts;
+	/* Initialize timestamp - will be set when tone reaches full amplitude */
+	st->gen.first_packet_timestamp = 0.0;
+	st->gen.full_amplitude_reached = false;
 
-	info("tonedetect: tone start: frequency=%u frequency2=%u duration=%u tone_id=%zu ref=tone_start timestamp=%.6f\n",
-	     freq1, freq2, st->gen.duration_ms, tone_id,
-	     st->gen.first_packet_timestamp);
+	info("tonedetect: tone start: frequency=%u frequency2=%u duration=%u tone_id=%zu\n",
+	     freq1, freq2, st->gen.duration_ms, tone_id);
 
-	/* Emit event using a deterministic reference point: first generated sample. */
-	bevent_app_emit(UA_EVENT_AUDIO_LATENCY_OUTGOING, NULL,
-			"tone_id=%zu timestamp=%.6f",
-			tone_id, st->gen.first_packet_timestamp);
+	/* Event will be emitted when tone reaches full amplitude with timestamp in ms */
 }
 
 static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
@@ -374,8 +376,6 @@ static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
 	int16_t *sampv;
 	uint64_t now;
 	bool rtp_warmup_done;
-	/* Capture local timestamp when frame is being sent */
-	const double frame_send_time = unix_time_now();
 
 	if (!st || !af)
 		return EINVAL;
@@ -408,17 +408,8 @@ static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
 			const uint8_t ib = config.send_pair_b[pair_index];
 			const uint32_t f1 = config.send_frequencies[ia];
 			const uint32_t f2 = config.send_frequencies[ib];
-			/* Use frame send time, adjusted to reference first sample of frame */
-			const double frame_sec =
-				(af->srate > 0 && af->ch > 0)
-					? ((double)af->sampc /
-					   ((double)af->srate * (double)af->ch))
-					: 0.0;
-			/* Emit closer to sample-time reference instead of packet-send edge. */
-			double tone_start_unix_ts = frame_send_time - frame_sec * TX_REF_HALF_FRAME_CORR;
 
-			start_tone_generation(st, f1, f2, tone_id, af->srate,
-					      tone_start_unix_ts);
+			start_tone_generation(st, f1, f2, tone_id, af->srate);
 
 			st->gen.current_tone_index =
 				(st->gen.current_tone_index + 1) % config.num_send_pairs;
@@ -458,6 +449,18 @@ static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
 					}
 				}
 
+				/* Capture timestamp when tone reaches full amplitude for the first time */
+				if (!st->gen.full_amplitude_reached && env >= 1.0) {
+					/* Get timestamp at exact moment when full amplitude is reached (ms precision) */
+					const double full_amplitude_timestamp = unix_time_now_ms();
+					st->gen.first_packet_timestamp = full_amplitude_timestamp;
+					st->gen.full_amplitude_reached = true;
+					/* Emit event with timestamp when full amplitude is reached */
+					bevent_app_emit(UA_EVENT_AUDIO_LATENCY_OUTGOING, NULL,
+							"tone_id=%zu timestamp=%.3f",
+							st->gen.tone_id, full_amplitude_timestamp);
+				}
+
 				/* Dual-tone (DTMF-style): sum of two sines, scaled to keep level */
 				const double s1 = sin(st->gen.phase);
 				const double s2 = sin(st->gen.phase2);
@@ -493,8 +496,6 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 	size_t i, j;
 	int16_t *sampv;
 	const uint64_t now = tmr_jiffies();
-	/* Capture local timestamp when frame arrives */
-	const double frame_arrival_time = unix_time_now();
 
 	if (!st || !af || st->det.num_frequencies == 0 ||
 	    st->det.detection_window_samples == 0) {
@@ -516,8 +517,14 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 	/* Feed samples into a ring buffer and evaluate overlapping windows.
 	 * This greatly reduces "missed tones" when a short tone straddles a
 	 * window boundary, without loosening false-positive thresholds.
+	 * 
+	 * Track when each sample arrives to timestamp when tone reaches full amplitude
+	 * in the actual audio signal (not when detection confirms it).
 	 */
 	for (i = 0; i < af->sampc; i++) {
+		/* Capture timestamp when this sample arrives (for full amplitude detection) */
+		const double sample_arrival_time = unix_time_now_ms();
+		
 		/* Ring buffer store */
 		if (st->det.ring) {
 			st->det.ring[st->det.ring_pos] = sampv[i];
@@ -606,6 +613,7 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 
 			if (best_index == (size_t)-1 || second_index == (size_t)-1) {
 				st->det.candidate_count = 0;
+				st->det.full_amplitude_detected = false;
 				continue;
 			}
 
@@ -625,6 +633,7 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 
 			if (!passes) {
 				st->det.candidate_count = 0;
+				st->det.full_amplitude_detected = false;
 				continue;
 			}
 
@@ -643,6 +652,7 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			if (a_is_low == b_is_low) {
 				/* Both from same set - reject this detection early */
 				st->det.candidate_count = 0;
+				st->det.full_amplitude_detected = false;
 				continue;
 			}
 
@@ -663,23 +673,9 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			/* Debounce on the pair-index */
 			if (st->det.candidate_count == 0 ||
 			    st->det.candidate_pair_index != pair_index) {
-				/* Use frame arrival time, adjusted for sample position in frame */
-				/* This ensures first_seen uses the actual frame arrival time, not detection time */
-				const double sample_offset_sec = (double)i / ((double)af->srate * (double)af->ch);
-				const double sample_timestamp = frame_arrival_time + sample_offset_sec;
-				const bool same_pair_reacquire =
-					(st->det.candidate_pair_index == pair_index) &&
-					(st->det.first_packet_timestamp > 0.0) &&
-					(DETECT_FIRST_SEEN_HOLD_MS > 0 &&
-					 (sample_timestamp - st->det.first_packet_timestamp) * 1000.0 <=
-					 DETECT_FIRST_SEEN_HOLD_MS);
-
 				st->det.candidate_pair_index = pair_index;
 				st->det.candidate_count = 1;
-				/* Keep first_seen for short same-pair dropouts to avoid jumpy latency. */
-				/* first_packet_timestamp uses frame arrival time for accurate latency measurement */
-				if (!same_pair_reacquire)
-					st->det.first_packet_timestamp = sample_timestamp;
+				st->det.full_amplitude_detected = false;  /* Reset for new pair */
 			}
 			else if (st->det.candidate_count < 255) {
 				st->det.candidate_count++;
@@ -702,24 +698,6 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 
 			/* Absolute guard: ignore very weak detections */
 			if (mag1 < DETECT_MIN_MAGNITUDE || mag2 < DETECT_MIN_MAGNITUDE) {
-				continue;
-			}
-			/* Use frame arrival time, adjusted for sample position in frame */
-			const double sample_offset_sec = (double)i / ((double)af->srate * (double)af->ch);
-			const double detect_timestamp = frame_arrival_time + sample_offset_sec;
-			const double first_seen_timestamp =
-				(st->det.first_packet_timestamp > 0.0)
-					? st->det.first_packet_timestamp
-					: detect_timestamp;
-			const double confirm_delay_ms =
-				(detect_timestamp - first_seen_timestamp) * 1000.0;
-
-			/* Guard against stale first_seen causing high-latency outliers. */
-			/* Reset first_packet_timestamp using frame-based detect_timestamp */
-			if (confirm_delay_ms < 0.0 ||
-			    confirm_delay_ms > DETECT_MAX_CONFIRM_DELAY_MS) {
-				st->det.first_packet_timestamp = detect_timestamp;
-				st->det.candidate_count = 1;
 				continue;
 			}
 
@@ -772,14 +750,34 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			if (low_idx >= config.num_detect_low || high_idx >= config.num_detect_high)
 				tone_id = 0;
 
-			info("tonedetect: tone detect: frequency=%u frequency2=%u magnitude=%.3f tone_id=%zu (low_idx=%zu high_idx=%zu) timestamp=%.6f first_seen=%.6f\n",
-			     detected_f1, detected_f2, magnitude, tone_id, low_idx, high_idx,
-			     detect_timestamp, first_seen_timestamp);
+			/* Capture timestamp when tone reaches full amplitude in the audio signal */
+			/* This matches TX side: both measure when the tone signal reaches full amplitude */
+			/* On TX: we check env >= 1.0 (envelope reaches full amplitude) */
+			/* On RX: when all validations pass and tone is detected with sufficient magnitude, */
+			/* the tone signal has reached full amplitude in the audio */
+			/* We timestamp when the audio signal itself reaches full amplitude */
+			if (!st->det.full_amplitude_detected) {
+				/* Track peak amplitude to determine when full amplitude is reached */
+				if (magnitude > st->det.peak_amplitude) {
+					st->det.peak_amplitude = magnitude;
+				}
+				
+				/* When all validations pass (magnitude, thresholds, tone_id valid), */
+				/* the tone has reached full amplitude in the audio signal */
+				/* This is the same event as TX: tone reaches full amplitude */
+				/* Timestamp when this detection occurs (representing when tone reached full amplitude) */
+				st->det.first_packet_timestamp = unix_time_now_ms();
+				st->det.full_amplitude_detected = true;
+			}
 
-			/* Use first_seen_timestamp (frame-based) for accurate latency measurement */
+			info("tonedetect: tone detect: frequency=%u frequency2=%u magnitude=%.3f tone_id=%zu (low_idx=%zu high_idx=%zu) timestamp=%.3f\n",
+			     detected_f1, detected_f2, magnitude, tone_id, low_idx, high_idx,
+			     st->det.first_packet_timestamp);
+
+			/* Use timestamp captured when tone first reaches full amplitude (ms precision) */
 			bevent_app_emit(UA_EVENT_AUDIO_LATENCY_INCOMING, NULL,
-					"magnitude=%.3f tone_id=%zu timestamp=%.6f",
-					magnitude, tone_id, first_seen_timestamp);
+					"magnitude=%.3f tone_id=%zu timestamp=%.3f",
+					magnitude, tone_id, st->det.first_packet_timestamp);
 
 			st->det.last_emit_time = now;
 			st->det.last_emit_index = pair_index;
