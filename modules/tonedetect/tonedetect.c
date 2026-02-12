@@ -29,7 +29,7 @@
 #define DETECT_DUAL_BALANCE_MIN      0.65  /* second peak must be close enough to first */
 #define DETECT_TOP2_SHARE_MIN        0.85  /* top 2 peaks must dominate tracked target energy */
 #define RTP_WARMUP_SUPPRESS_MS       1000  /* ignore startup transients right after RTP establish */
-#define TX_REF_HALF_FRAME_CORR       0.3   /* move TX timestamp slightly earlier */
+#define TX_REF_HALF_FRAME_CORR       0.4   /* move TX timestamp slightly earlier */
 
 /* Sender tone shaping to reduce spectral leakage */
 #define TONE_RAMP_MS                 2     /* fade-in/out (2ms) for 15ms tones - reduces spectral leakage */
