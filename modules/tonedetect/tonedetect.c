@@ -24,11 +24,9 @@
 #define DETECT_CONSECUTIVE_BLOCKS    3     /* add temporal stability against speech/music transients */
 #define DETECT_SUPPRESS_MS           3000  /* suppress repeat events */
 #define DETECT_MIN_MAGNITUDE         95.0   /* reduce weak false positives */
-#define DETECT_FIRST_SEEN_HOLD_MS    0     /* disable first_seen carry-over to avoid early bias */
-#define DETECT_MAX_CONFIRM_DELAY_MS  25.0  /* reject/re-anchor stale first_seen timestamps */
 #define DETECT_DUAL_BALANCE_MIN      0.65  /* second peak must be close enough to first */
 #define DETECT_TOP2_SHARE_MIN        0.85  /* top 2 peaks must dominate tracked target energy */
-#define RTP_WARMUP_SUPPRESS_MS       1000  /* ignore startup transients right after RTP establish */
+#define RTP_WARMUP_SUPPRESS_MS       2000  /* ignore startup transients right after RTP establish */
 
 /* Sender tone shaping to reduce spectral leakage */
 #define TONE_RAMP_MS                 2     /* fade-in/out (2ms) for 15ms tones - reduces spectral leakage */
@@ -95,7 +93,6 @@ struct tonedetect_st {
 		bool last_emit_valid;
 		uint32_t srate;
 		bool full_amplitude_detected;  /* Flag to track if full amplitude timestamp was captured */
-		double peak_amplitude;  /* Track peak amplitude of detected tone for full amplitude detection */
 	} det;
 };
 
@@ -171,10 +168,8 @@ static size_t pair_index_from_two(size_t i, size_t j, size_t n)
 /**
  * Initialize Goertzel algorithm for a specific frequency
  */
-static double goertzel_init_coeff(uint32_t target_freq, uint32_t srate,
-				  size_t block_size)
+static double goertzel_init_coeff(uint32_t target_freq, uint32_t srate)
 {
-	(void)block_size; /* Reserved for future use */
 	double normalized_freq = (double)target_freq / (double)srate;
 	return 2.0 * cos(2.0 * PI * normalized_freq);
 }
@@ -283,7 +278,6 @@ static int decode_update(struct aufilt_dec_st **stp, void **ctx,
 	st->det.last_emit_index = 0;
 	st->det.last_emit_valid = false;
 	st->det.full_amplitude_detected = false;
-	st->det.peak_amplitude = 0.0;
 	st->det.num_frequencies = config.num_detect_frequencies;
 
 	if (st->det.num_frequencies > 0) {
@@ -318,8 +312,7 @@ static int decode_update(struct aufilt_dec_st **stp, void **ctx,
 		for (i = 0; i < st->det.num_frequencies; i++) {
 			st->det.frequencies[i] = config.detect_frequencies[i];
 			st->det.goertzel_coeffs[i] = goertzel_init_coeff(
-				config.detect_frequencies[i], prm->srate,
-				st->det.detection_window_samples);
+				config.detect_frequencies[i], prm->srate);
 			st->det.goertzel_q1[i] = 0.0;
 			st->det.goertzel_q2[i] = 0.0;
 		}
@@ -517,14 +510,8 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 	/* Feed samples into a ring buffer and evaluate overlapping windows.
 	 * This greatly reduces "missed tones" when a short tone straddles a
 	 * window boundary, without loosening false-positive thresholds.
-	 * 
-	 * Track when each sample arrives to timestamp when tone reaches full amplitude
-	 * in the actual audio signal (not when detection confirms it).
 	 */
 	for (i = 0; i < af->sampc; i++) {
-		/* Capture timestamp when this sample arrives (for full amplitude detection) */
-		const double sample_arrival_time = unix_time_now_ms();
-		
 		/* Ring buffer store */
 		if (st->det.ring) {
 			st->det.ring[st->det.ring_pos] = sampv[i];
@@ -555,7 +542,6 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			double second_power = 0.0;
 			size_t best_index = (size_t)-1;
 			size_t second_index = (size_t)-1;
-			const uint64_t now = tmr_jiffies();
 			double block_energy = 0.0;
 
 			/* Reset Goertzel state for this evaluation */
@@ -755,17 +741,7 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			/* On TX: we check env >= 1.0 (envelope reaches full amplitude) */
 			/* On RX: when all validations pass and tone is detected with sufficient magnitude, */
 			/* the tone signal has reached full amplitude in the audio */
-			/* We timestamp when the audio signal itself reaches full amplitude */
 			if (!st->det.full_amplitude_detected) {
-				/* Track peak amplitude to determine when full amplitude is reached */
-				if (magnitude > st->det.peak_amplitude) {
-					st->det.peak_amplitude = magnitude;
-				}
-				
-				/* When all validations pass (magnitude, thresholds, tone_id valid), */
-				/* the tone has reached full amplitude in the audio signal */
-				/* This is the same event as TX: tone reaches full amplitude */
-				/* Timestamp when this detection occurs (representing when tone reached full amplitude) */
 				st->det.first_packet_timestamp = unix_time_now_ms();
 				st->det.full_amplitude_detected = true;
 			}
