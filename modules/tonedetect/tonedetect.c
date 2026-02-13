@@ -26,7 +26,7 @@
 #define DETECT_MIN_MAGNITUDE         120.0  /* reduce weak false positives */
 #define DETECT_DUAL_BALANCE_MIN      0.65  /* second peak must be close enough to first */
 #define DETECT_TOP2_SHARE_MIN        0.85  /* top 2 peaks must dominate tracked target energy */
-#define RTP_WARMUP_SUPPRESS_MS       3000  /* ignore startup transients right after RTP establish */
+#define RTP_WARMUP_SUPPRESS_MS       4000  /* ignore startup transients right after RTP establish */
 
 /* Sender tone shaping to reduce spectral leakage */
 #define TONE_RAMP_MS                 2     /* fade-in/out (2ms) for 15ms tones - reduces spectral leakage */
