@@ -26,7 +26,7 @@
 #define DETECT_MIN_MAGNITUDE         95.0   /* reduce weak false positives */
 #define DETECT_DUAL_BALANCE_MIN      0.65  /* second peak must be close enough to first */
 #define DETECT_TOP2_SHARE_MIN        0.85  /* top 2 peaks must dominate tracked target energy */
-#define RTP_WARMUP_SUPPRESS_MS       2000  /* ignore startup transients right after RTP establish */
+#define RTP_WARMUP_SUPPRESS_MS       3000  /* ignore startup transients right after RTP establish */
 
 /* Sender tone shaping to reduce spectral leakage */
 #define TONE_RAMP_MS                 2     /* fade-in/out (2ms) for 15ms tones - reduces spectral leakage */
@@ -189,8 +189,8 @@ static double unix_time_now_ms(void)
 {
 	struct timeval tv;
 	gettimeofday(&tv, NULL);
-	/* Convert to milliseconds, then to seconds for millisecond precision */
-	return ((double)tv.tv_sec * 1000.0 + (double)tv.tv_usec / 1000.0) / 1000.0;
+	/* Convert to microseconds, then to seconds for microsecond precision */
+	return ((double)tv.tv_sec * 1000000.0 + (double)tv.tv_usec) / 1000000.0;
 }
 
 static int encode_update(struct aufilt_enc_st **stp, void **ctx,
@@ -444,13 +444,13 @@ static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
 
 				/* Capture timestamp when tone reaches full amplitude for the first time */
 				if (!st->gen.full_amplitude_reached && env >= 1.0) {
-					/* Get timestamp at exact moment when full amplitude is reached (ms precision) */
+					/* Get timestamp at exact moment when full amplitude is reached (microsecond precision) */
 					const double full_amplitude_timestamp = unix_time_now_ms();
 					st->gen.first_packet_timestamp = full_amplitude_timestamp;
 					st->gen.full_amplitude_reached = true;
 					/* Emit event with timestamp when full amplitude is reached */
 					bevent_app_emit(UA_EVENT_AUDIO_LATENCY_OUTGOING, NULL,
-							"tone_id=%zu timestamp=%.3f",
+							"tone_id=%zu timestamp=%.6f",
 							st->gen.tone_id, full_amplitude_timestamp);
 				}
 
@@ -746,13 +746,13 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 				st->det.full_amplitude_detected = true;
 			}
 
-			info("tonedetect: tone detect: frequency=%u frequency2=%u magnitude=%.3f tone_id=%zu (low_idx=%zu high_idx=%zu) timestamp=%.3f\n",
+			info("tonedetect: tone detect: frequency=%u frequency2=%u magnitude=%.3f tone_id=%zu (low_idx=%zu high_idx=%zu) timestamp=%.6f\n",
 			     detected_f1, detected_f2, magnitude, tone_id, low_idx, high_idx,
 			     st->det.first_packet_timestamp);
 
-			/* Use timestamp captured when tone first reaches full amplitude (ms precision) */
+			/* Use timestamp captured when tone first reaches full amplitude (microsecond precision) */
 			bevent_app_emit(UA_EVENT_AUDIO_LATENCY_INCOMING, NULL,
-					"magnitude=%.3f tone_id=%zu timestamp=%.3f",
+					"magnitude=%.3f tone_id=%zu timestamp=%.6f",
 					magnitude, tone_id, st->det.first_packet_timestamp);
 
 			st->det.last_emit_time = now;
