@@ -26,7 +26,7 @@
 #define DETECT_MIN_MAGNITUDE         120.0  /* reduce weak false positives */
 #define DETECT_DUAL_BALANCE_MIN      0.65  /* second peak must be close enough to first */
 #define DETECT_TOP2_SHARE_MIN        0.85  /* top 2 peaks must dominate tracked target energy */
-#define RTP_WARMUP_SUPPRESS_MS       4000  /* ignore startup transients right after RTP establish */
+#define RTP_WARMUP_SUPPRESS_MS       1000  /* ignore startup transients right after RTP establish */
 
 /* Sender tone shaping to reduce spectral leakage */
 #define TONE_RAMP_MS                 2     /* fade-in/out (2ms) for 15ms tones - reduces spectral leakage */
@@ -87,6 +87,7 @@ struct tonedetect_st {
 		double *window;            /* Window coefficients (Hamming) */
 		size_t candidate_pair_index;
 		uint8_t candidate_count;
+		uint8_t failure_count;  /* Count consecutive failures to avoid resetting timestamp on brief interruptions */
 		double first_packet_timestamp;  /* Unix timestamp when first packet with tone is decoded */
 		uint64_t last_emit_time;
 		size_t last_emit_index;    /* 0-based index */
@@ -149,12 +150,12 @@ static void dec_destructor(void *arg)
 {
 	struct tonedetect_st *st = arg;
 	list_unlink(&st->u.daf.le);
-	mem_deref(st->det.frequencies);
-	mem_deref(st->det.goertzel_coeffs);
-	mem_deref(st->det.goertzel_q1);
-	mem_deref(st->det.goertzel_q2);
-	mem_deref(st->det.window);
-	mem_deref(st->det.ring);
+		mem_deref(st->det.frequencies);
+		mem_deref(st->det.goertzel_coeffs);
+		mem_deref(st->det.goertzel_q1);
+		mem_deref(st->det.goertzel_q2);
+		mem_deref(st->det.window);
+		mem_deref(st->det.ring);
 	/* Note: mem_deref(st) is called automatically by the mem system */
 }
 
@@ -273,6 +274,7 @@ static int decode_update(struct aufilt_dec_st **stp, void **ctx,
 	st->det.hop_count = 0;
 	st->det.candidate_pair_index = 0;
 	st->det.candidate_count = 0;
+	st->det.failure_count = 0;
 	st->det.first_packet_timestamp = 0.0;
 	st->det.last_emit_time = 0;
 	st->det.last_emit_index = 0;
@@ -599,7 +601,12 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 
 			if (best_index == (size_t)-1 || second_index == (size_t)-1) {
 				st->det.candidate_count = 0;
-				st->det.full_amplitude_detected = false;
+				st->det.failure_count++;
+				/* Only reset full_amplitude_detected after many consecutive failures */
+				/* This avoids recapturing timestamp on brief detection interruptions */
+				if (st->det.failure_count >= 10) {
+					st->det.full_amplitude_detected = false;
+				}
 				continue;
 			}
 
@@ -619,7 +626,11 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 
 			if (!passes) {
 				st->det.candidate_count = 0;
-				st->det.full_amplitude_detected = false;
+				st->det.failure_count++;
+				/* Only reset full_amplitude_detected after many consecutive failures */
+				if (st->det.failure_count >= 10) {
+					st->det.full_amplitude_detected = false;
+				}
 				continue;
 			}
 
@@ -638,7 +649,11 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			if (a_is_low == b_is_low) {
 				/* Both from same set - reject this detection early */
 				st->det.candidate_count = 0;
-				st->det.full_amplitude_detected = false;
+				st->det.failure_count++;
+				/* Only reset full_amplitude_detected after many consecutive failures */
+				if (st->det.failure_count >= 10) {
+					st->det.full_amplitude_detected = false;
+				}
 				continue;
 			}
 
@@ -661,12 +676,17 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			    st->det.candidate_pair_index != pair_index) {
 				st->det.candidate_pair_index = pair_index;
 				st->det.candidate_count = 1;
-				st->det.full_amplitude_detected = false;  /* Reset for new pair */
+				/* Don't reset full_amplitude_detected here - only reset when detection truly fails */
 			}
 			else if (st->det.candidate_count < 255) {
 				st->det.candidate_count++;
 			}
+			
+			/* Reset failure count when detection is successful */
+			st->det.failure_count = 0;
 
+			/* Wait for stable detection before capturing timestamp and emitting event */
+			/* This ensures the tone has reached full amplitude and avoids spikes from transition windows */
 			if (st->det.candidate_count < DETECT_CONSECUTIVE_BLOCKS)
 				continue;
 
@@ -739,11 +759,20 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			/* Capture timestamp when tone reaches full amplitude in the audio signal */
 			/* This matches TX side: both measure when the tone signal reaches full amplitude */
 			/* On TX: we check env >= 1.0 (envelope reaches full amplitude) */
-			/* On RX: when all validations pass and tone is detected with sufficient magnitude, */
-			/* the tone signal has reached full amplitude in the audio */
+			/* On RX: wait for stable detection (DETECT_CONSECUTIVE_BLOCKS) to ensure tone has */
+			/* reached full amplitude and avoid spikes from transition windows */
+			/* Wait one extra block (DETECT_CONSECUTIVE_BLOCKS + 1) to ensure we're past any transition window */
 			if (!st->det.full_amplitude_detected) {
-				st->det.first_packet_timestamp = unix_time_now_ms();
-				st->det.full_amplitude_detected = true;
+				/* Only capture timestamp after we've had enough consecutive detections */
+				/* This ensures we're past any transition from silence to tone */
+				if (st->det.candidate_count >= DETECT_CONSECUTIVE_BLOCKS + 1) {
+					st->det.first_packet_timestamp = unix_time_now_ms();
+					st->det.full_amplitude_detected = true;
+				}
+				else {
+					/* Not enough consecutive blocks yet - skip emitting event until timestamp is captured */
+					continue;
+				}
 			}
 
 			info("tonedetect: tone detect: frequency=%u frequency2=%u magnitude=%.3f tone_id=%zu (low_idx=%zu high_idx=%zu) timestamp=%.6f\n",
