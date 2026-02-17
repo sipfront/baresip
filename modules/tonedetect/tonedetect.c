@@ -26,7 +26,7 @@
 #define DETECT_MIN_MAGNITUDE         120.0  /* reduce weak false positives */
 #define DETECT_DUAL_BALANCE_MIN      0.65  /* second peak must be close enough to first */
 #define DETECT_TOP2_SHARE_MIN        0.85  /* top 2 peaks must dominate tracked target energy */
-#define RTP_WARMUP_SUPPRESS_MS       1000  /* ignore startup transients right after RTP establish */
+#define STABILITY_RTT_DEVIATION_MAX   0.20  /* max 20% deviation between consecutive RTTs for stability */
 
 /* Sender tone shaping to reduce spectral leakage */
 #define TONE_RAMP_MS                 2     /* fade-in/out (2ms) for 15ms tones - reduces spectral leakage */
@@ -69,6 +69,8 @@ struct tonedetect_st {
 		size_t tone_id;  /* ID of currently active tone */
 		double first_packet_timestamp;  /* Host timestamp when tone generation starts */
 		bool full_amplitude_reached;  /* Flag to track if full amplitude timestamp was captured */
+		bool is_ping_mode;  /* true = sending pings (500ms), false = regular tones (5s) */
+		size_t regular_tone_start_index;  /* Per-instance starting offset for sequential regular tones */
 	} gen;
 
 	/* Tone detection (decoder) */
@@ -125,7 +127,7 @@ static struct {
 	.num_detect_low = 0,
 	.num_detect_high = 0,
 	.tone_duration_ms = 80,   /* longer tone improves robust lock with short windows */
-	.enable_tone_generation = false  /* Default: disabled */
+	.enable_tone_generation = false,  /* Default: disabled */
 };
 
 /* Global state to track if call is ready for tone generation/detection */
@@ -133,10 +135,54 @@ static struct {
 	bool call_established;  /* CALL_ESTABLISHED event received */
 	bool rtp_established;   /* CALL_RTPESTAB event received (for audio) */
 	uint64_t rtp_established_time; /* jiffies when audio RTP became established */
+	struct call *current_call;  /* Current call object */
 } tonedetect_call_state = {
 	.call_established = false,
 	.rtp_established = false,
-	.rtp_established_time = 0
+	.rtp_established_time = 0,
+	.current_call = NULL
+};
+
+/* RTT tracking for ping/pong stability detection */
+static struct {
+	double last_ping_sent_timestamp;  /* Timestamp when last ping (tone_id 1) was sent */
+	double last_pong_received_timestamp;  /* Timestamp when last pong (tone_id 2) was received */
+	double last_rtt;                /* Last calculated RTT */
+	double prev_rtt;                /* Previous RTT for stability check */
+	bool last_rtt_valid;            /* Whether last_rtt is valid */
+	bool prev_rtt_valid;             /* Whether prev_rtt is valid */
+	bool connection_stable;          /* Whether connection is detected as stable */
+	uint64_t last_ping_sent_time;    /* Global: jiffies when last ping was sent (to coordinate across encoder instances) */
+	uint64_t last_pong_received_time; /* Global: jiffies when last pong was received (for timeout calculation) */
+	uint64_t next_ping_time;         /* Global: jiffies when next ping should be sent (20ms after pong received) */
+	/* Regular tone scheduling is global (per-process) to avoid bursts when multiple encoder instances exist */
+	uint64_t last_regular_tone_end_time;  /* Global: jiffies when last regular tone ended */
+	bool regular_tone_active;             /* Global: a regular tone is currently being generated */
+	struct tonedetect_st *regular_tone_owner; /* Global: encoder instance currently generating the regular tone */
+	size_t regular_tone_index;            /* Global: next sequential tone offset (0..num_regular-1) */
+	size_t regular_tone_start_offset;     /* Global: start offset for sequential tones to desync peers */
+	bool pending_pong;                /* Whether we need to send a pong (tone_id 2) */
+	bool pending_ping;                /* Whether we need to send a ping (tone_id 1) */
+	bool first_ping_sent;             /* Whether the first ping has been sent */
+} rtt_tracking = {
+	.last_ping_sent_timestamp = 0.0,
+	.last_pong_received_timestamp = 0.0,
+	.last_rtt = 0.0,
+	.prev_rtt = 0.0,
+	.last_rtt_valid = false,
+	.prev_rtt_valid = false,
+	.connection_stable = false,
+	.last_ping_sent_time = 0,
+	.last_pong_received_time = 0,
+	.next_ping_time = 0,
+	.last_regular_tone_end_time = 0,
+	.regular_tone_active = false,
+	.regular_tone_owner = NULL,
+	.regular_tone_index = 0,
+	.regular_tone_start_offset = 0,
+	.pending_pong = false,
+	.pending_ping = false,
+	.first_ping_sent = false
 };
 
 static void enc_destructor(void *arg)
@@ -232,6 +278,8 @@ static int encode_update(struct aufilt_enc_st **stp, void **ctx,
 	else
 		st->gen.current_tone_index = 0;
 	st->gen.tone_id = 0;
+	st->gen.is_ping_mode = true;  /* Start in ping mode until connection is stable */
+	st->gen.regular_tone_start_index = 0;  /* Will be set when switching to regular tone mode */
 
 	*stp = (struct aufilt_enc_st *)st;
 
@@ -364,60 +412,198 @@ static void start_tone_generation(struct tonedetect_st *st,
 	/* Event will be emitted when tone reaches full amplitude with timestamp in ms */
 }
 
+/* Simplified: Pings always use tone_id 1, pongs always use tone_id 2 */
+#define PING_TONE_ID 1
+#define PONG_TONE_ID 2
+#define MIN_REGULAR_TONE_ID 3
+
 static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
 {
 	struct tonedetect_st *st = (struct tonedetect_st *)aufilt_enc_st;
 	size_t i;
 	int16_t *sampv;
 	uint64_t now;
-	bool rtp_warmup_done;
 
 	if (!st || !af)
 		return EINVAL;
 
 	sampv = (int16_t *)af->sampv;
 	now = tmr_jiffies();
-	rtp_warmup_done = tonedetect_call_state.rtp_established_time != 0 &&
-			  (now - tonedetect_call_state.rtp_established_time) >=
-				  RTP_WARMUP_SUPPRESS_MS;
 
-	/* Stop any active tone if generation is disabled */
-	if (!config.enable_tone_generation && st->gen.active) {
+	/* Stop any active tone if generation is disabled (except pongs - they must always be sent) */
+	if (!config.enable_tone_generation && st->gen.active && st->gen.tone_id != PONG_TONE_ID) {
 		st->gen.active = false;
 		st->gen.last_tone_end_time = now;
 	}
 
-	/* Check if we should start a new tone (only if generation is enabled and call is ready) */
-	if (config.enable_tone_generation && tonedetect_call_state.call_established && tonedetect_call_state.rtp_established &&
-	    rtp_warmup_done && !st->gen.active && config.num_send_pairs > 0) {
-		uint64_t time_since_last_tone = now - st->gen.last_tone_end_time;
-		uint64_t spacing_ms = 5000;  /* 5 seconds between tones */
+	/* Update ping mode based on connection stability - check global flag */
+	/* Once connection is stable, all encoder instances should switch to regular tone mode */
+	if (rtt_tracking.connection_stable) {
+		if (st->gen.is_ping_mode) {
+			st->gen.is_ping_mode = false;
+			/* Set per-instance starting index based on memory address to ensure different starting points */
+			/* Use pointer value to create a deterministic but different starting point for each instance */
+			size_t num_regular = config.num_send_pairs - (MIN_REGULAR_TONE_ID - 1);
+			if (num_regular > 0) {
+				/* Use memory address of instance to create a hash-like value */
+				uintptr_t addr = (uintptr_t)st;
+				st->gen.regular_tone_start_index = (size_t)(addr % num_regular);
+				info("tonedetect: switching from ping mode to regular tone mode (encoder instance), starting at index %zu\n",
+				     st->gen.regular_tone_start_index);
+			}
+			else {
+				st->gen.regular_tone_start_index = 0;
+			}
+		}
+		/* Don't continuously reset last_tone_end_time - only reset when switching modes or when ping/pong ends */
+		/* The reset for first regular tone is handled when ping/pong ends (see tone generation code) */
+		/* Don't clear pending pongs when connection is stable - we always reply to pings */
+	}
 
-		/* Only start a new tone if 5 seconds have passed since last tone ended */
-		/* (or if no tone has been sent yet, i.e., last_tone_end_time is 0) */
-		if (st->gen.last_tone_end_time == 0 || time_since_last_tone >= spacing_ms) {
-			/* Round-robin through frequency pairs */
-			size_t pair_index = st->gen.current_tone_index;
-			size_t tone_id = pair_index + 1; /* 1..Npairs */
+	/* Priority 1: Send pong reply (tone_id 2) if we received a ping (always, even if generation is disabled) */
+	/* Pongs must always be sent in reply to pings, regardless of generation setting */
+	if (rtt_tracking.pending_pong && tonedetect_call_state.call_established && tonedetect_call_state.rtp_established &&
+	    !st->gen.active && config.num_send_pairs > 0) {
+		/* Send pong immediately (tone_id 2) - interrupt any other tone sending */
+		size_t pair_index = PONG_TONE_ID - 1;
+		const uint8_t ia = config.send_pair_a[pair_index];
+		const uint8_t ib = config.send_pair_b[pair_index];
+		uint32_t f1 = config.send_frequencies[ia];
+		uint32_t f2 = config.send_frequencies[ib];
+		
+		info("tonedetect: sending pong reply (tone_id=%d)\n", PONG_TONE_ID);
+		start_tone_generation(st, f1, f2, PONG_TONE_ID, af->srate);
+		
+		rtt_tracking.pending_pong = false;
+	}
+
+	/* Priority 2: Send ping (tone_id 1) dynamically - first ping immediately, then after pong or timeout */
+	/* Send first ping as soon as call/RTP is established */
+	if (!rtt_tracking.first_ping_sent && tonedetect_call_state.call_established && tonedetect_call_state.rtp_established &&
+	    !st->gen.active && config.num_send_pairs > 0 && PING_TONE_ID <= config.num_send_pairs) {
+		/* Send first ping immediately */
+		size_t pair_index = PING_TONE_ID - 1;
+		const uint8_t ia = config.send_pair_a[pair_index];
+		const uint8_t ib = config.send_pair_b[pair_index];
+		uint32_t f1 = config.send_frequencies[ia];
+		uint32_t f2 = config.send_frequencies[ib];
+		
+		info("tonedetect: sending first ping (tone_id=%d) - call/RTP established\n", PING_TONE_ID);
+		start_tone_generation(st, f1, f2, PING_TONE_ID, af->srate);
+		
+		rtt_tracking.last_ping_sent_time = now;
+		rtt_tracking.first_ping_sent = true;
+		rtt_tracking.pending_ping = false;
+	}
+	/* Send ping if scheduled (20ms after receiving a pong and stability not detected) or if timeout (2 seconds without pong) */
+	else if (!rtt_tracking.connection_stable && rtt_tracking.next_ping_time > 0 && now >= rtt_tracking.next_ping_time &&
+	         tonedetect_call_state.call_established && tonedetect_call_state.rtp_established &&
+	         !st->gen.active && config.num_send_pairs > 0 && PING_TONE_ID <= config.num_send_pairs) {
+		/* Send ping 20ms after receiving a pong (if stability not detected) */
+		size_t pair_index = PING_TONE_ID - 1;
+		const uint8_t ia = config.send_pair_a[pair_index];
+		const uint8_t ib = config.send_pair_b[pair_index];
+		uint32_t f1 = config.send_frequencies[ia];
+		uint32_t f2 = config.send_frequencies[ib];
+		
+		info("tonedetect: sending ping (tone_id=%d) - 20ms after pong received\n", PING_TONE_ID);
+		start_tone_generation(st, f1, f2, PING_TONE_ID, af->srate);
+		
+		rtt_tracking.last_ping_sent_time = now;
+		rtt_tracking.next_ping_time = 0;  /* Clear scheduled ping time */
+		rtt_tracking.pending_ping = false;
+	}
+	/* Check for timeout: if 1 second passes without receiving a pong, send another ping */
+	else if (!rtt_tracking.connection_stable && rtt_tracking.first_ping_sent && rtt_tracking.last_ping_sent_time > 0 &&
+	         tonedetect_call_state.call_established && tonedetect_call_state.rtp_established &&
+	         !st->gen.active && config.num_send_pairs > 0 && PING_TONE_ID <= config.num_send_pairs) {
+		uint64_t ping_timeout_ms = 1000;  /* 1 second timeout */
+		uint64_t time_since_ping = now - rtt_tracking.last_ping_sent_time;
+		uint64_t time_since_pong = (rtt_tracking.last_pong_received_time > 0) ? (now - rtt_tracking.last_pong_received_time) : ping_timeout_ms;
+		
+		/* If no pong received within 1 second, send another ping */
+		if (time_since_ping >= ping_timeout_ms && time_since_pong >= ping_timeout_ms) {
+			size_t pair_index = PING_TONE_ID - 1;
 			const uint8_t ia = config.send_pair_a[pair_index];
 			const uint8_t ib = config.send_pair_b[pair_index];
-			const uint32_t f1 = config.send_frequencies[ia];
-			const uint32_t f2 = config.send_frequencies[ib];
-
-			start_tone_generation(st, f1, f2, tone_id, af->srate);
-
-			st->gen.current_tone_index =
-				(st->gen.current_tone_index + 1) % config.num_send_pairs;
+			uint32_t f1 = config.send_frequencies[ia];
+			uint32_t f2 = config.send_frequencies[ib];
+			
+			info("tonedetect: sending ping (tone_id=%d) - timeout (no pong received in 1s)\n", PING_TONE_ID);
+			start_tone_generation(st, f1, f2, PING_TONE_ID, af->srate);
+			
+			rtt_tracking.last_ping_sent_time = now;
 		}
 	}
 
-	/* Generate tone if active and generation is enabled */
-	if (config.enable_tone_generation && st->gen.active) {
+	/* Check if we should start a new tone (only if generation is enabled and call is ready) */
+	if (config.enable_tone_generation && tonedetect_call_state.call_established && tonedetect_call_state.rtp_established &&
+	    !st->gen.active && config.num_send_pairs > 0) {
+		/* Priority 3: Send regular tone if connection is stable (random order from IDs 3-9) */
+		if (rtt_tracking.connection_stable) {
+			/* Regular tones: sequential IDs (3..N), globally scheduled every 5 seconds per process */
+			const uint64_t tone_spacing_ms = 5000;  /* 5s for regular tones */
+
+			if (!rtt_tracking.regular_tone_active) {
+				const uint64_t since_last =
+					(rtt_tracking.last_regular_tone_end_time == 0) ? tone_spacing_ms :
+					(now - rtt_tracking.last_regular_tone_end_time);
+				const bool tone_should_send =
+					(rtt_tracking.last_regular_tone_end_time == 0 ||
+					 since_last >= tone_spacing_ms);
+
+				if (tone_should_send && config.num_send_pairs >= MIN_REGULAR_TONE_ID) {
+					const size_t num_regular = config.num_send_pairs - (MIN_REGULAR_TONE_ID - 1);
+					if (num_regular > 0) {
+						/* Sequential: 3..(3+num_regular-1) */
+						const size_t idx = (rtt_tracking.regular_tone_start_offset +
+								    rtt_tracking.regular_tone_index) % num_regular;
+						const size_t tone_id = MIN_REGULAR_TONE_ID + idx;
+						const size_t pair_index = tone_id - 1;
+						const uint8_t ia = config.send_pair_a[pair_index];
+						const uint8_t ib = config.send_pair_b[pair_index];
+						const uint32_t f1 = config.send_frequencies[ia];
+						const uint32_t f2 = config.send_frequencies[ib];
+
+						start_tone_generation(st, f1, f2, tone_id, af->srate);
+
+						/* Claim ownership so only one encoder instance sends regular tones */
+						rtt_tracking.regular_tone_active = true;
+						rtt_tracking.regular_tone_owner = st;
+						rtt_tracking.regular_tone_index++;
+					}
+				}
+			}
+		}
+	}
+
+	sampv = (int16_t *)af->sampv;
+
+	/* Generate tone if active (always generate pongs, even if generation is disabled) */
+	if (st->gen.active && (config.enable_tone_generation || st->gen.tone_id == PONG_TONE_ID)) {
 		uint64_t elapsed_ms = (now - st->gen.start_time);
 
 		if (elapsed_ms >= st->gen.duration_ms) {
 			st->gen.active = false;
-			st->gen.last_tone_end_time = now;  /* Record when tone ended */
+			/* Record when tone ended */
+			/* If we just switched to regular tone mode and this was a ping/pong, reset timer to send first regular tone immediately */
+			if (rtt_tracking.connection_stable && !st->gen.is_ping_mode &&
+			    (st->gen.tone_id == PING_TONE_ID || st->gen.tone_id == PONG_TONE_ID)) {
+				/* Just finished a ping/pong after stability - reset timer to send first regular tone immediately */
+				st->gen.last_tone_end_time = 0;
+				info("tonedetect: ping/pong ended after stability, resetting timer for first regular tone\n");
+			}
+			else {
+				st->gen.last_tone_end_time = now;
+			}
+
+			/* If this instance is generating the global regular tone, update the global scheduler */
+			if (st->gen.tone_id >= MIN_REGULAR_TONE_ID &&
+			    rtt_tracking.regular_tone_owner == st) {
+				rtt_tracking.last_regular_tone_end_time = now;
+				rtt_tracking.regular_tone_active = false;
+				rtt_tracking.regular_tone_owner = NULL;
+			}
 			/* Event already emitted when tone started, no need to emit again */
 		}
 		else {
@@ -450,10 +636,33 @@ static int encode(struct aufilt_enc_st *aufilt_enc_st, struct auframe *af)
 					const double full_amplitude_timestamp = unix_time_now_ms();
 					st->gen.first_packet_timestamp = full_amplitude_timestamp;
 					st->gen.full_amplitude_reached = true;
+					
+					/* Track ping timestamps for RTT calculation */
+					if (st->gen.tone_id == PING_TONE_ID) {
+						rtt_tracking.last_ping_sent_timestamp = full_amplitude_timestamp;
+						info("tonedetect: ping sent (tone_id=%d) timestamp=%.6f (tracked for RTT calculation)\n",
+						     PING_TONE_ID, full_amplitude_timestamp);
+					}
+					
 					/* Emit event with timestamp when full amplitude is reached */
-					bevent_app_emit(UA_EVENT_AUDIO_LATENCY_OUTGOING, NULL,
-							"tone_id=%zu timestamp=%.6f",
-							st->gen.tone_id, full_amplitude_timestamp);
+					if (st->gen.tone_id == PING_TONE_ID) {
+						/* Ping: use "ping" as type */
+						bevent_app_emit(UA_EVENT_AUDIO_LATENCY_OUTGOING, NULL,
+								"ping timestamp=%.6f",
+								full_amplitude_timestamp);
+					}
+					else if (st->gen.tone_id == PONG_TONE_ID) {
+						/* Pong: use "pong" as type */
+						bevent_app_emit(UA_EVENT_AUDIO_LATENCY_OUTGOING, NULL,
+								"pong timestamp=%.6f",
+								full_amplitude_timestamp);
+					}
+					else {
+						/* Regular tones: just tone_id, no type */
+						bevent_app_emit(UA_EVENT_AUDIO_LATENCY_OUTGOING, NULL,
+								"tone_id=%zu timestamp=%.6f",
+								st->gen.tone_id, full_amplitude_timestamp);
+					}
 				}
 
 				/* Dual-tone (DTMF-style): sum of two sines, scaled to keep level */
@@ -499,11 +708,6 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 
 	/* Only detect tones if call is established and RTP is established */
 	if (!tonedetect_call_state.call_established || !tonedetect_call_state.rtp_established) {
-		return 0;
-	}
-	if (tonedetect_call_state.rtp_established_time == 0 ||
-	    (now - tonedetect_call_state.rtp_established_time) <
-		    RTP_WARMUP_SUPPRESS_MS) {
 		return 0;
 	}
 
@@ -690,13 +894,6 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			if (st->det.candidate_count < DETECT_CONSECUTIVE_BLOCKS)
 				continue;
 
-			/* Suppress repeats for the same pair while it's still present */
-			if (st->det.last_emit_valid &&
-			    st->det.last_emit_index == pair_index &&
-			    (now - st->det.last_emit_time) < DETECT_SUPPRESS_MS) {
-				continue;
-			}
-
 			/* Keep "magnitude" semantics similar to prior code */
 			double mag1 = sqrt(best_power) / (double)st->det.detection_window_samples;
 			double mag2 = sqrt(second_power) / (double)st->det.detection_window_samples;
@@ -755,6 +952,17 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			size_t tone_id = (low_idx * config.num_detect_high) + high_idx + 1;
 			if (low_idx >= config.num_detect_low || high_idx >= config.num_detect_high)
 				tone_id = 0;
+			
+			/* Suppress repeats for the same pair while it's still present */
+			/* Use shorter suppression window for ping/pong (they're shorter tones) */
+			bool is_ping_or_pong = (tone_id == PING_TONE_ID || tone_id == PONG_TONE_ID);
+			uint64_t suppress_ms = is_ping_or_pong ? 200 : DETECT_SUPPRESS_MS;  /* 200ms for ping/pong, 3000ms for regular tones */
+			if (st->det.last_emit_valid &&
+			    st->det.last_emit_index == pair_index &&
+			    (now - st->det.last_emit_time) < suppress_ms) {
+				/* Suppress if same pair was detected recently */
+				continue;
+			}
 
 			/* Capture timestamp when tone reaches full amplitude in the audio signal */
 			/* This matches TX side: both measure when the tone signal reaches full amplitude */
@@ -780,9 +988,139 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 			     st->det.first_packet_timestamp);
 
 			/* Use timestamp captured when tone first reaches full amplitude (microsecond precision) */
-			bevent_app_emit(UA_EVENT_AUDIO_LATENCY_INCOMING, NULL,
-					"magnitude=%.3f tone_id=%zu timestamp=%.6f",
-					magnitude, tone_id, st->det.first_packet_timestamp);
+			/* Determine tone type: ping (tone_id 1), pong (tone_id 2), or regular tone (3-9) */
+			/* Only process ping/pong if call and RTP are established (avoid false positives from noise) */
+			if (tone_id == PING_TONE_ID) {
+				/* Only accept ping if call and RTP are established */
+				if (!tonedetect_call_state.call_established || !tonedetect_call_state.rtp_established) {
+					info("tonedetect: ignoring ping detection - call/RTP not established\n");
+					continue;
+				}
+				
+				/* Ping received: emit event and always queue pong reply */
+				bevent_app_emit(UA_EVENT_AUDIO_LATENCY_INCOMING, NULL,
+						"ping magnitude=%.3f timestamp=%.6f",
+						magnitude, st->det.first_packet_timestamp);
+				
+				/* Always reply with pong (tone_id 2) when we receive a ping */
+				rtt_tracking.pending_pong = true;
+				info("tonedetect: ping received (tone_id=%d), queuing pong reply (tone_id=%d)\n",
+				     PING_TONE_ID, PONG_TONE_ID);
+				
+				/* Reset detection state to prevent detecting the same ping multiple times */
+				st->det.full_amplitude_detected = false;
+				st->det.candidate_count = 0;
+			}
+			else if (tone_id == PONG_TONE_ID) {
+				/* Only accept pong if call and RTP are established, and we actually sent a ping */
+				if (!tonedetect_call_state.call_established || !tonedetect_call_state.rtp_established) {
+					info("tonedetect: ignoring pong detection - call/RTP not established\n");
+					continue;
+				}
+				
+				/* Only accept pong if we actually sent a ping (validate against false positives) */
+				if (rtt_tracking.last_ping_sent_timestamp <= 0.0) {
+					info("tonedetect: ignoring pong detection - no ping was sent (false positive)\n");
+					continue;
+				}
+				
+				/* Pong received: emit event and always calculate RTT */
+				bevent_app_emit(UA_EVENT_AUDIO_LATENCY_INCOMING, NULL,
+						"pong magnitude=%.3f timestamp=%.6f",
+						magnitude, st->det.first_packet_timestamp);
+				
+				/* Update last pong received time for timeout calculation */
+				rtt_tracking.last_pong_received_time = tmr_jiffies();
+				
+				/* Calculate RTT between last sent ping and this received pong (always check) */
+				if (rtt_tracking.last_ping_sent_timestamp > 0.0) {
+					rtt_tracking.last_pong_received_timestamp = st->det.first_packet_timestamp;
+					const double rtt = rtt_tracking.last_pong_received_timestamp - rtt_tracking.last_ping_sent_timestamp;
+					
+					/* Only use valid RTT (positive and reasonable, e.g., less than 1 second) */
+					/* This filters out cases where ping timestamp was overwritten by a newer ping */
+					if (rtt > 0.0 && rtt < 1.0) {
+						/* Log RTT calculation */
+						info("tonedetect: RTT calculated: ping_ts=%.6f pong_ts=%.6f rtt=%.6f (%.3f ms)\n",
+						     rtt_tracking.last_ping_sent_timestamp, rtt_tracking.last_pong_received_timestamp,
+						     rtt, rtt * 1000.0);
+						
+						/* Update RTT tracking */
+						rtt_tracking.prev_rtt = rtt_tracking.last_rtt;
+						rtt_tracking.prev_rtt_valid = rtt_tracking.last_rtt_valid;
+						rtt_tracking.last_rtt = rtt;
+						rtt_tracking.last_rtt_valid = true;
+						
+						/* Check stability: two consecutive pongs with RTT deviation < 50% */
+						if (rtt_tracking.prev_rtt_valid && rtt_tracking.last_rtt_valid) {
+							/* Convert RTT to milliseconds for deviation calculation */
+							const double prev_rtt_ms = rtt_tracking.prev_rtt * 1000.0;
+							const double last_rtt_ms = rtt_tracking.last_rtt * 1000.0;
+							const double avg_rtt_ms = (prev_rtt_ms + last_rtt_ms) / 2.0;
+							const double deviation_ms = fabs(last_rtt_ms - prev_rtt_ms);
+							const double deviation_percent = (avg_rtt_ms > 0.0) ? (deviation_ms / avg_rtt_ms) : 1.0;
+							
+							info("tonedetect: RTT stability check: prev_rtt=%.3f ms last_rtt=%.3f ms avg_rtt=%.3f ms deviation=%.3f ms (%.2f%%)\n",
+							     prev_rtt_ms, last_rtt_ms, avg_rtt_ms, deviation_ms, deviation_percent * 100.0);
+							
+							if (deviation_percent < STABILITY_RTT_DEVIATION_MAX && !rtt_tracking.connection_stable) {
+								rtt_tracking.connection_stable = true;
+								/* Initialize regular-tone scheduler so first tone can send immediately */
+								rtt_tracking.last_regular_tone_end_time = 0;
+								rtt_tracking.regular_tone_active = false;
+								rtt_tracking.regular_tone_owner = NULL;
+								rtt_tracking.regular_tone_index = 0;
+								if (config.num_send_pairs >= MIN_REGULAR_TONE_ID) {
+									size_t num_regular = config.num_send_pairs - (MIN_REGULAR_TONE_ID - 1);
+									if (num_regular > 0) {
+										rtt_tracking.regular_tone_start_offset = rand_u32() % num_regular;
+									}
+								}
+								/* Force all encoder instances to switch to regular tone mode immediately */
+								info("tonedetect: connection stable detected: RTT=%.3f ms prev_RTT=%.3f ms deviation=%.3f ms (%.2f%%) - switching to regular tones\n",
+								     last_rtt_ms, prev_rtt_ms, deviation_ms, deviation_percent * 100.0);
+								/* Don't emit a stability event (per requirements) */
+							}
+							else if (!rtt_tracking.connection_stable) {
+								/* Stability not detected yet - schedule next ping 20ms after pong received */
+								rtt_tracking.next_ping_time = rtt_tracking.last_pong_received_time + 20;  /* 20ms after pong */
+								rtt_tracking.pending_ping = true;
+								info("tonedetect: stability not detected (deviation=%.2f%%), scheduling next ping in 20ms\n",
+								     deviation_percent * 100.0);
+							}
+						}
+						else if (!rtt_tracking.prev_rtt_valid) {
+							info("tonedetect: RTT tracking: first pong received, rtt=%.3f ms, waiting for second pong for stability check - scheduling next ping in 20ms\n",
+							     rtt * 1000.0);
+							/* First pong received - schedule next ping 20ms after pong to get second RTT measurement */
+							rtt_tracking.next_ping_time = rtt_tracking.last_pong_received_time + 20;  /* 20ms after pong */
+							rtt_tracking.pending_ping = true;
+						}
+					}
+					else {
+						info("tonedetect: RTT calculation skipped: invalid rtt=%.6f (%.3f ms) - ping_ts=%.6f pong_ts=%.6f\n",
+						     rtt, rtt * 1000.0, rtt_tracking.last_ping_sent_timestamp, rtt_tracking.last_pong_received_timestamp);
+						/* Invalid RTT - schedule next ping 20ms after pong to retry */
+						rtt_tracking.next_ping_time = rtt_tracking.last_pong_received_time + 20;  /* 20ms after pong */
+						rtt_tracking.pending_ping = true;
+					}
+				}
+				else {
+					/* No ping timestamp available - schedule next ping 20ms after pong */
+					rtt_tracking.next_ping_time = rtt_tracking.last_pong_received_time + 20;  /* 20ms after pong */
+					rtt_tracking.pending_ping = true;
+				}
+				
+				/* Reset detection state to prevent detecting the same pong multiple times */
+				st->det.full_amplitude_detected = false;
+				st->det.candidate_count = 0;
+			}
+			else {
+				/* Regular tone (3-9): emit event with tone_id only, no type */
+				bevent_app_emit(UA_EVENT_AUDIO_LATENCY_INCOMING, NULL,
+						"tone_id=%zu magnitude=%.3f timestamp=%.6f",
+						tone_id, magnitude, st->det.first_packet_timestamp);
+			}
 
 			st->det.last_emit_time = now;
 			st->det.last_emit_index = pair_index;
@@ -801,10 +1139,27 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 	(void)arg;
 
 	switch (ev) {
+	case UA_EVENT_CALL_INCOMING:
+		/* Track incoming call */
+		if (call) {
+			tonedetect_call_state.current_call = call;
+			info("tonedetect: CALL_INCOMING - call ready for tone generation/detection\n");
+		}
+		break;
+
+	case UA_EVENT_CALL_OUTGOING:
+		/* Track outgoing call */
+		if (call) {
+			tonedetect_call_state.current_call = call;
+			info("tonedetect: CALL_OUTGOING - call ready for tone generation/detection\n");
+		}
+		break;
+
 	case UA_EVENT_CALL_ESTABLISHED:
 		/* Only set state if we have a valid call */
 		if (call) {
 			tonedetect_call_state.call_established = true;
+			tonedetect_call_state.current_call = call;
 			info("tonedetect: CALL_ESTABLISHED - call ready for tone generation/detection\n");
 		}
 		break;
@@ -840,6 +1195,27 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 		tonedetect_call_state.call_established = false;
 		tonedetect_call_state.rtp_established = false;
 		tonedetect_call_state.rtp_established_time = 0;
+		/* Reset RTT tracking for next call */
+		rtt_tracking.last_ping_sent_timestamp = 0.0;
+		rtt_tracking.last_pong_received_timestamp = 0.0;
+		rtt_tracking.last_rtt = 0.0;
+		rtt_tracking.prev_rtt = 0.0;
+		rtt_tracking.last_rtt_valid = false;
+		rtt_tracking.prev_rtt_valid = false;
+		rtt_tracking.connection_stable = false;
+		rtt_tracking.last_ping_sent_time = 0;
+		rtt_tracking.last_pong_received_time = 0;
+		rtt_tracking.next_ping_time = 0;
+		rtt_tracking.last_regular_tone_end_time = 0;
+		rtt_tracking.regular_tone_active = false;
+		rtt_tracking.regular_tone_owner = NULL;
+		rtt_tracking.regular_tone_index = 0;
+		rtt_tracking.regular_tone_start_offset = 0;
+		rtt_tracking.pending_pong = false;
+		rtt_tracking.pending_ping = false;
+		rtt_tracking.first_ping_sent = false;
+		tonedetect_call_state.current_call = NULL;
+		/* Note: gen.is_ping_mode will be reset in encode_update when new call starts */
 		info("tonedetect: Call ended - resetting state\n");
 		break;
 
@@ -909,6 +1285,20 @@ static int module_init(void)
 			config.num_send_pairs = npairs;
 		}
 	}
+
+	/* Initialize ping/pong configuration */
+	/* Default: tone_ids 1,3,5,7,9 are pings; 2,4,6,8 are pongs */
+	/* This can be easily changed by modifying the arrays below */
+	/* Pings use tone_id 1, pongs use tone_id 2 (fixed) */
+	
+	/* Initialize RTT tracking */
+	/* Pings use tone_id 1, pongs use tone_id 2 (fixed) */
+	/* Regular tones are sequential and globally scheduled; no allocation needed */
+	rtt_tracking.last_rtt = 0.0;
+	rtt_tracking.prev_rtt = 0.0;
+	rtt_tracking.last_rtt_valid = false;
+	rtt_tracking.prev_rtt_valid = false;
+	rtt_tracking.connection_stable = false;
 
 	/* Read configuration parameter for tone generation */
 	conf_get_bool(conf_cur(), "tone_generation",
