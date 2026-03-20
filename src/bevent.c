@@ -465,8 +465,7 @@ static int add_codec_info(struct odict *od_parent, const struct call *call)
 		goto out;
 
  out:
-	if (err)
-		mem_deref(od);
+	mem_deref(od);
 
 	return err;
 }
