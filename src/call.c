@@ -539,9 +539,6 @@ static void stream_rtpestab_handler(struct stream *strm, void *arg)
 	struct call *call = arg;
 	MAGIC_CHECK(call);
 
-	/* Ensure codecs are set before emitting */
-	(void)call_update_media(call);
-
 	bevent_call_emit(UA_EVENT_CALL_RTPESTAB, call,
 			 "%s", sdp_media_name(stream_sdpmedia(strm)));
 }
