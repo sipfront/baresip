@@ -924,6 +924,7 @@ enum ua_event {
 	UA_EVENT_CALL_DTMF_POUND,
 	UA_EVENT_CALL_DTMF_END,
 	UA_EVENT_CALL_RTPESTAB,
+	UA_EVENT_CALL_CODEC,          /**< negotiated codecs (param: media name) */
 	UA_EVENT_CALL_RTCP,
 	UA_EVENT_CALL_MENC,
 	UA_EVENT_VU_TX,
@@ -1495,6 +1496,7 @@ int  audio_encoder_set(struct audio *a, const struct aucodec *ac,
 int  audio_decoder_set(struct audio *a, const struct aucodec *ac,
 		       int pt_rx, const char *params);
 const struct aucodec *audio_codec(const struct audio *au, bool tx);
+int audio_rx_payload_type(const struct audio *au);
 struct config_audio *audio_config(struct audio *au);
 bool audio_txtelev_empty(const struct audio *au);
 void audio_call_telev_handler(const struct audio *au, int key, bool end);
@@ -1563,6 +1565,7 @@ typedef void (stream_rtpestab_h)(struct stream *strm, void *arg);
 typedef void (stream_rtcp_h)(struct stream *strm,
 			     struct rtcp_msg *msg, void *arg);
 typedef void (stream_error_h)(struct stream *strm, int err, void *arg);
+typedef void (stream_codec_ch)(struct stream *strm, void *arg);
 
 int stream_update(struct stream *s);
 const struct rtcp_stats *stream_rtcp_stats(const struct stream *strm);
@@ -1592,6 +1595,9 @@ void stream_set_session_handlers(struct stream *strm,
 				 stream_rtpestab_h *rtpestabh,
 				 stream_rtcp_h *rtcph,
 				 stream_error_h *errorh, void *arg);
+void stream_set_codec_change(struct stream *strm, stream_codec_ch *ch,
+			     void *arg);
+void stream_codec_changed(struct stream *strm);
 struct stream *stream_lookup_mid(const struct list *streaml,
 				 const char *mid, size_t len);
 const char *stream_name(const struct stream *strm);

@@ -132,6 +132,7 @@ static const char *ua_event_class_name(enum ua_event ev)
 	case UA_EVENT_CALL_DTMF_POUND:
 	case UA_EVENT_CALL_DTMF_END:
 	case UA_EVENT_CALL_RTPESTAB:
+	case UA_EVENT_CALL_CODEC:
 	case UA_EVENT_CALL_RTCP:
 	case UA_EVENT_CALL_MENC:
 	case UA_EVENT_CALL_ENDED_LOCAL:
@@ -409,8 +410,8 @@ static int add_call_stats(struct odict *od_parent, const struct call *call)
 static int add_codec_info(struct odict *od_parent, const struct call *call)
 {
 	struct odict *od = NULL;
-	const struct aucodec *ac;
-	const struct vidcodec *vc;
+	const struct aucodec *ac_tx, *ac_rx, *ac_sdp;
+	const struct vidcodec *vc_tx, *vc_rx, *vc_sdp;
 	const struct sdp_format *fmt;
 	struct sdp_media *m;
 	int err = 0;
@@ -422,39 +423,64 @@ static int add_codec_info(struct odict *od_parent, const struct call *call)
 	if (err)
 		goto out;
 
-	/* Add audio codec information (tx/rx same, use tx or fallback to SDP) */
+	/* Add audio codec information (per tx/rx; SDP fallback if unset) */
 	if (call_audio(call)) {
-		ac = audio_codec(call_audio(call), true);
-		if (!ac)
-			ac = audio_codec(call_audio(call), false);
-		if (!ac) {
+		ac_tx = audio_codec(call_audio(call), true);
+		ac_rx = audio_codec(call_audio(call), false);
+		ac_sdp = NULL;
+		if (!ac_tx || !ac_rx) {
 			m = stream_sdpmedia(audio_strm(call_audio(call)));
 			fmt = sdp_media_rformat(m, NULL);
 			if (fmt && fmt->data)
-				ac = fmt->data;
+				ac_sdp = fmt->data;
+			if (!ac_tx)
+				ac_tx = ac_sdp;
+			if (!ac_rx)
+				ac_rx = ac_sdp;
 		}
-		if (ac) {
-			err |= odict_entry_add(od, "audio", ODICT_STRING, ac->name);
-			err |= odict_entry_add(od, "audio_srate", ODICT_INT, (int64_t)ac->srate);
-			err |= odict_entry_add(od, "audio_channels", ODICT_INT, (int64_t)ac->ch);
+		if (ac_tx) {
+			err |= odict_entry_add(od, "audio_tx", ODICT_STRING, ac_tx->name);
+			err |= odict_entry_add(od, "audio_tx_srate", ODICT_INT,
+					       (int64_t)ac_tx->srate);
+			err |= odict_entry_add(od, "audio_tx_channels", ODICT_INT,
+					       (int64_t)ac_tx->ch);
+		}
+		if (ac_rx) {
+			err |= odict_entry_add(od, "audio_rx", ODICT_STRING, ac_rx->name);
+			err |= odict_entry_add(od, "audio_rx_srate", ODICT_INT,
+					       (int64_t)ac_rx->srate);
+			err |= odict_entry_add(od, "audio_rx_channels", ODICT_INT,
+					       (int64_t)ac_rx->ch);
 		}
 	}
 
-	/* Add video codec information (tx/rx same, use tx or fallback to SDP) */
+	/* Add video codec information (per tx/rx; SDP fallback if unset) */
 	if (call_video(call)) {
-		vc = video_codec(call_video(call), true);
-		if (!vc)
-			vc = video_codec(call_video(call), false);
-		if (!vc) {
+		vc_tx = video_codec(call_video(call), true);
+		vc_rx = video_codec(call_video(call), false);
+		vc_sdp = NULL;
+		if (!vc_tx || !vc_rx) {
 			m = stream_sdpmedia(video_strm(call_video(call)));
 			fmt = sdp_media_rformat(m, NULL);
 			if (fmt && fmt->data)
-				vc = fmt->data;
+				vc_sdp = fmt->data;
+			if (!vc_tx)
+				vc_tx = vc_sdp;
+			if (!vc_rx)
+				vc_rx = vc_sdp;
 		}
-		if (vc) {
-			err |= odict_entry_add(od, "video", ODICT_STRING, vc->name);
-			if (vc->variant) {
-				err |= odict_entry_add(od, "video_variant", ODICT_STRING, vc->variant);
+		if (vc_tx) {
+			err |= odict_entry_add(od, "video_tx", ODICT_STRING, vc_tx->name);
+			if (vc_tx->variant) {
+				err |= odict_entry_add(od, "video_tx_variant", ODICT_STRING,
+						       vc_tx->variant);
+			}
+		}
+		if (vc_rx) {
+			err |= odict_entry_add(od, "video_rx", ODICT_STRING, vc_rx->name);
+			if (vc_rx->variant) {
+				err |= odict_entry_add(od, "video_rx_variant", ODICT_STRING,
+						       vc_rx->variant);
 			}
 		}
 	}
@@ -618,7 +644,7 @@ int event_encode_dict(struct odict *od, struct ua *ua, enum ua_event ev,
 		if (err)
 			goto out;
 	}
-	else if (ev == UA_EVENT_CALL_RTPESTAB) {
+	else if (ev == UA_EVENT_CALL_CODEC) {
 		err = add_codec_info(od, call);
 		if (err)
 			goto out;
@@ -1156,6 +1182,7 @@ const char *uag_event_str(enum ua_event ev)
 	case UA_EVENT_CALL_SEND_DTMF_POUND: return "CALL_SEND_DTMF_#";
 	case UA_EVENT_CALL_SEND_DTMF_END:   return "CALL_SEND_DTMF_END";
 	case UA_EVENT_CALL_RTPESTAB:        return "CALL_RTPESTAB";
+	case UA_EVENT_CALL_CODEC:           return "CALL_CODEC";
 	case UA_EVENT_CALL_RTCP:            return "CALL_RTCP";
 	case UA_EVENT_CALL_MENC:            return "CALL_MENC";
 	case UA_EVENT_VU_TX:                return "VU_TX_REPORT";

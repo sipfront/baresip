@@ -80,6 +80,8 @@ struct stream {
 	stream_rtcp_h *sessrtcph;    /**< Stream RTCP handler               */
 	stream_error_h *errorh;  /**< Stream error handler                  */
 	void *sess_arg;          /**< Session handlers argument             */
+	stream_codec_ch *codec_ch; /**< SIP call codec change notify        */
+	void *codec_ch_arg;      /**< Argument for codec_ch               */
 
 	struct bundle *bundle;
 	uint8_t extmap_counter;
@@ -951,7 +953,29 @@ int stream_update(struct stream *s)
 
 	stream_enable(s, true);
 
+	stream_codec_changed(s);
+
 	return 0;
+}
+
+
+void stream_set_codec_change(struct stream *strm, stream_codec_ch *ch,
+			     void *arg)
+{
+	if (!strm)
+		return;
+
+	strm->codec_ch = ch;
+	strm->codec_ch_arg = arg;
+}
+
+
+void stream_codec_changed(struct stream *strm)
+{
+	if (!strm || !strm->codec_ch)
+		return;
+
+	strm->codec_ch(strm, strm->codec_ch_arg);
 }
 
 

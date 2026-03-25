@@ -1391,6 +1391,8 @@ int audio_encoder_set(struct audio *a, const struct aucodec *ac,
 	if (ac->ptime)
 		tx->ptime = ac->ptime;
 
+	stream_codec_changed(a->strm);
+
 	return err;
 }
 
@@ -1436,6 +1438,8 @@ int audio_decoder_set(struct audio *a, const struct aucodec *ac,
 	stream_set_srate(a->strm, 0, ac->crate);
 	if (reset || !aurecv_player_started(a->aur))
 		err |= aurecv_start_player(a->aur, baresip_auplayl());
+
+	stream_codec_changed(a->strm);
 
 	return err;
 }
@@ -1939,6 +1943,15 @@ const struct aucodec *audio_codec(const struct audio *au, bool tx)
 		return NULL;
 
 	return tx ? au->tx.ac : aurecv_codec(au->aur);
+}
+
+
+int audio_rx_payload_type(const struct audio *au)
+{
+	if (!au || !au->aur)
+		return -1;
+
+	return aurecv_payload_type(au->aur);
 }
 
 

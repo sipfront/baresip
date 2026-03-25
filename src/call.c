@@ -88,6 +88,8 @@ struct call {
 	/**< Timestamp of first invite sent to calc stats */
 	uint64_t ts_invite_sent;
 	uint64_t stat_pdd;
+
+	char codec_state_fp[384]; /**< last emitted CALL_CODEC fingerprint   */
 };
 
 
@@ -534,6 +536,138 @@ static void stream_mnatconn_handler(struct stream *strm, void *arg)
 }
 
 
+static void call_build_codec_fp(struct call *call, char *buf, size_t sz)
+{
+	const struct aucodec *ac_tx, *ac_rx, *ac_sdp;
+	const struct vidcodec *vc_tx, *vc_rx, *vc_sdp;
+	const struct sdp_format *fmt;
+	struct sdp_media *m;
+	int aptx = -1, aprx = -1;
+	int vptx = -1;
+
+	if (!call || !buf || !sz) {
+		if (buf && sz)
+			buf[0] = '\0';
+		return;
+	}
+
+	buf[0] = '\0';
+
+	if (call->audio) {
+		ac_tx = audio_codec(call->audio, true);
+		ac_rx = audio_codec(call->audio, false);
+		ac_sdp = NULL;
+		if (!ac_tx || !ac_rx) {
+			m = stream_sdpmedia(audio_strm(call->audio));
+			fmt = sdp_media_rformat(m, NULL);
+			if (fmt && fmt->data)
+				ac_sdp = fmt->data;
+			if (!ac_tx)
+				ac_tx = ac_sdp;
+			if (!ac_rx)
+				ac_rx = ac_sdp;
+		}
+		m = audio_strm(call->audio);
+		if (m)
+			aptx = stream_pt_enc(m);
+		aprx = audio_rx_payload_type(call->audio);
+
+		(void)re_snprintf(buf, sz,
+				  "A:%s:%u:%u:%d|%s:%u:%u:%d|",
+				  ac_tx ? ac_tx->name : "-",
+				  ac_tx ? ac_tx->srate : 0u,
+				  ac_tx ? (unsigned)ac_tx->ch : 0u,
+				  aptx,
+				  ac_rx ? ac_rx->name : "-",
+				  ac_rx ? ac_rx->srate : 0u,
+				  ac_rx ? (unsigned)ac_rx->ch : 0u,
+				  aprx);
+	}
+	else {
+		(void)re_snprintf(buf, sz, "A:-|");
+	}
+
+	if (call->video) {
+		size_t len = str_len(buf);
+		char *p;
+		size_t left;
+
+		if (len >= sz)
+			return;
+		p = buf + len;
+		left = sz - len;
+
+		vc_tx = video_codec(call->video, true);
+		vc_rx = video_codec(call->video, false);
+		vc_sdp = NULL;
+		if (!vc_tx || !vc_rx) {
+			m = stream_sdpmedia(video_strm(call->video));
+			fmt = sdp_media_rformat(m, NULL);
+			if (fmt && fmt->data)
+				vc_sdp = fmt->data;
+			if (!vc_tx)
+				vc_tx = vc_sdp;
+			if (!vc_rx)
+				vc_rx = vc_sdp;
+		}
+		m = video_strm(call->video);
+		if (m)
+			vptx = stream_pt_enc(m);
+
+		(void)re_snprintf(p, left, "V:%s:%s|%s:%s|%d",
+				  vc_tx ? vc_tx->name : "-",
+				  vc_tx && vc_tx->variant ? vc_tx->variant : "-",
+				  vc_rx ? vc_rx->name : "-",
+				  vc_rx && vc_rx->variant ? vc_rx->variant : "-",
+				  vptx);
+	}
+	else {
+		size_t len = str_len(buf);
+		char *p;
+		size_t left;
+
+		if (len >= sz)
+			return;
+		p = buf + len;
+		left = sz - len;
+		(void)re_snprintf(p, left, "V:-");
+	}
+}
+
+
+static void call_codec_notify(struct call *call, const char *param)
+{
+	char fp[sizeof(call->codec_state_fp)];
+
+	if (!call)
+		return;
+
+	MAGIC_CHECK(call);
+
+	call_build_codec_fp(call, fp, sizeof(fp));
+	if (str_cmp(call->codec_state_fp, fp) == 0)
+		return;
+
+	(void)str_ncpy(call->codec_state_fp, fp, sizeof(call->codec_state_fp));
+
+	bevent_call_emit(UA_EVENT_CALL_CODEC, call, "%s",
+			 str_isset(param) ? param : "codec");
+}
+
+
+static void call_on_stream_codec(struct stream *strm, void *arg)
+{
+	struct call *call = arg;
+
+	if (!strm || !call)
+		return;
+
+	MAGIC_CHECK(call);
+
+	call_codec_notify(call, sdp_media_name(stream_sdpmedia(strm)));
+}
+
+
 static void stream_rtpestab_handler(struct stream *strm, void *arg)
 {
 	struct call *call = arg;
@@ -541,6 +675,7 @@ static void stream_rtpestab_handler(struct stream *strm, void *arg)
 
 	bevent_call_emit(UA_EVENT_CALL_RTPESTAB, call,
 			 "%s", sdp_media_name(stream_sdpmedia(strm)));
+	call_codec_notify(call, sdp_media_name(stream_sdpmedia(strm)));
 }
 
 
@@ -788,6 +923,8 @@ int call_streams_alloc(struct call *call)
 					    stream_rtpestab_handler,
 					    stream_rtcp_handler,
 					    stream_error_handler, call);
+
+		stream_set_codec_change(strm, call_on_stream_codec, call);
 
 		stream_enable_natpinhole(strm, acc->pinhole);
 	}
