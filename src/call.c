@@ -107,6 +107,8 @@ static int send_invite(struct call *call);
 static int send_dtmf_info(struct call *call, char key);
 static int codec_reinvite_internal(struct call *call, const char *spec,
 				   bool user_init);
+static bool have_common_audio_codecs(const struct call *call);
+static bool have_common_video_codecs(const struct call *call);
 
 
 static const char *state_name(enum call_state st)
@@ -556,6 +558,7 @@ static void call_build_codec_fp(struct call *call, char *buf, size_t sz)
 	const struct vidcodec *vc_tx, *vc_rx, *vc_sdp;
 	const struct sdp_format *fmt;
 	struct sdp_media *m;
+	struct stream *strm;
 	int aptx = -1, aprx = -1;
 	int vptx = -1, vprx = -1;
 
@@ -581,9 +584,9 @@ static void call_build_codec_fp(struct call *call, char *buf, size_t sz)
 			if (!ac_rx)
 				ac_rx = ac_sdp;
 		}
-		m = audio_strm(call->audio);
-		if (m)
-			aptx = stream_pt_enc(m);
+		strm = audio_strm(call->audio);
+		if (strm)
+			aptx = stream_pt_enc(strm);
 		aprx = audio_rx_payload_type(call->audio);
 
 		(void)re_snprintf(buf, sz,
@@ -624,9 +627,9 @@ static void call_build_codec_fp(struct call *call, char *buf, size_t sz)
 			if (!vc_rx)
 				vc_rx = vc_sdp;
 		}
-		m = video_strm(call->video);
-		if (m)
-			vptx = stream_pt_enc(m);
+		strm = video_strm(call->video);
+		if (strm)
+			vptx = stream_pt_enc(strm);
 		vprx = video_rx_payload_type(call->video);
 
 		(void)re_snprintf(p, left, "V:%s:%s|%s:%s|%d|%d",
@@ -1432,10 +1435,13 @@ static int codec_reinvite_internal(struct call *call, const char *spec,
 	(void)str_ncpy(call->codec_rinv_spec, spec, sizeof(call->codec_rinv_spec));
 
 	if (!call_refresh_allowed(call)) {
+		enum sdp_neg_state neg_state = call_sdp_neg_state(call);
+		int neg_st = (int)neg_state;
+
 		if (!user_init && ++call->codec_rinv_retry > 50) {
 			warning("call: codec re-INVITE deferred too long "
 				"(SDP negotiation state=%d)\n",
-				(int)call_sdp_neg_state(call));
+				neg_st);
 			call->codec_rinv_spec[0] = '\0';
 			return ETIMEDOUT;
 		}
@@ -1445,7 +1451,7 @@ static int codec_reinvite_internal(struct call *call, const char *spec,
 			  call);
 		info("call: codec re-INVITE deferred (SDP negotiation not idle;"
 		     " state=%d)\n",
-		     (int)call_sdp_neg_state(call));
+		     neg_st);
 		return 0;
 	}
 
@@ -2185,6 +2191,7 @@ static int sipsess_offer_handler(struct mbuf **descp,
 	MAGIC_CHECK(call);
 
 	if (got_offer) {
+		struct mbuf *sdp_prev = NULL;
 		const struct sdp_media *m =
 			stream_sdpmedia(audio_strm(call->audio));
 		bool aurx = sdp_media_dir(m) & SDP_SENDONLY;
@@ -2206,13 +2213,36 @@ static int sipsess_offer_handler(struct mbuf **descp,
 			}
 		}
 
+		/* Snapshot session before applying peer offer (for rollback) */
+		err = sdp_encode(&sdp_prev, call->sdp, true);
+		if (err) {
+			warning("call: sdp_encode (pre re-INVITE): %m\n", err);
+			return err;
+		}
+
 		/* Decode SDP Offer */
 		err = sdp_decode(call->sdp, msg->mb, true);
 		if (err) {
+			mem_deref(sdp_prev);
 			warning("call: reinvite: could not decode SDP offer:"
 				" %m\n", err);
 			return err;
 		}
+
+		/* Reject before update_media so RTP/codec state stays unchanged */
+		if (!have_common_audio_codecs(call) &&
+		    !have_common_video_codecs(call)) {
+			info("call: no common audio or video codecs "
+			     "(SDP offer)\n");
+			err = sdp_decode(call->sdp, sdp_prev, true);
+			mem_deref(sdp_prev);
+			if (err)
+				warning("call: SDP rollback after reject: %m\n",
+					err);
+			return ENOTSUP;
+		}
+
+		mem_deref(sdp_prev);
 
 		if (aurx && !(sdp_media_dir(m) & SDP_SENDONLY))
 			bevent_call_emit(UA_EVENT_CALL_HOLD, call, "");
