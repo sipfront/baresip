@@ -17,6 +17,11 @@
 #define MAGIC 0xca11ca11
 #include "magic.h"
 
+/** Delay before emitting CALL_CODEC so rapid SDP/encoder updates coalesce */
+#ifndef CALL_CODEC_DEBOUNCE_MS
+#define CALL_CODEC_DEBOUNCE_MS 50
+#endif
+
 
 #define FOREACH_STREAM						\
 	for (le = call->streaml.head; le; le = le->next)
@@ -90,6 +95,8 @@ struct call {
 	uint64_t stat_pdd;
 
 	char codec_state_fp[384]; /**< last emitted CALL_CODEC fingerprint   */
+	struct tmr tmr_codec;     /**< debounce rapid codec notifications    */
+	char codec_prm[32];        /**< param for debounced CALL_CODEC emit   */
 };
 
 
@@ -358,6 +365,7 @@ static void call_destructor(void *arg)
 	tmr_cancel(&call->tmr_dtmf);
 	tmr_cancel(&call->tmr_answ);
 	tmr_cancel(&call->tmr_reinv);
+	tmr_cancel(&call->tmr_codec);
 
 	mem_deref(call->sess);
 	mem_deref(call->id);
@@ -543,7 +551,7 @@ static void call_build_codec_fp(struct call *call, char *buf, size_t sz)
 	const struct sdp_format *fmt;
 	struct sdp_media *m;
 	int aptx = -1, aprx = -1;
-	int vptx = -1;
+	int vptx = -1, vprx = -1;
 
 	if (!call || !buf || !sz) {
 		if (buf && sz)
@@ -613,13 +621,15 @@ static void call_build_codec_fp(struct call *call, char *buf, size_t sz)
 		m = video_strm(call->video);
 		if (m)
 			vptx = stream_pt_enc(m);
+		vprx = video_rx_payload_type(call->video);
 
-		(void)re_snprintf(p, left, "V:%s:%s|%s:%s|%d",
+		(void)re_snprintf(p, left, "V:%s:%s|%s:%s|%d|%d",
 				  vc_tx ? vc_tx->name : "-",
 				  vc_tx && vc_tx->variant ? vc_tx->variant : "-",
 				  vc_rx ? vc_rx->name : "-",
 				  vc_rx && vc_rx->variant ? vc_rx->variant : "-",
-				  vptx);
+				  vptx,
+				  vprx);
 	}
 	else {
 		size_t len = str_len(buf);
@@ -635,14 +645,53 @@ static void call_build_codec_fp(struct call *call, char *buf, size_t sz)
 }
 
 
-static void call_codec_notify(struct call *call, const char *param)
+/**
+ * True when CALL_CODEC may be emitted: media paths are far enough along
+ * that SDP/codec negotiation is not half-applied. For streams that receive
+ * RTP from the peer, the first RTP packet must have been seen (same as
+ * CALL_RTPESTAB). For send-only streams, remote RTP never arrives, so we
+ * require stream_is_ready (addresses, NAT, etc.) instead.
+ */
+static bool call_codec_ready_to_emit(struct call *call)
 {
+	struct le *le;
+
+	if (!call)
+		return false;
+
+	FOREACH_STREAM {
+		struct stream *strm = le->data;
+		enum sdp_dir dir = sdp_media_dir(stream_sdpmedia(strm));
+
+		if (dir == SDP_INACTIVE)
+			continue;
+
+		if (dir & SDP_RECVONLY) {
+			if (!stream_rtp_established(strm))
+				return false;
+		}
+		else {
+			if (!stream_is_ready(strm))
+				return false;
+		}
+	}
+
+	return true;
+}
+
+
+static void call_codec_debounce_handler(void *arg)
+{
+	struct call *call = arg;
 	char fp[sizeof(call->codec_state_fp)];
 
 	if (!call)
 		return;
 
 	MAGIC_CHECK(call);
+
+	if (!call_codec_ready_to_emit(call))
+		return;
 
 	call_build_codec_fp(call, fp, sizeof(fp));
 	if (str_cmp(call->codec_state_fp, fp) == 0)
@@ -651,7 +700,25 @@ static void call_codec_notify(struct call *call, const char *param)
 	(void)str_ncpy(call->codec_state_fp, fp, sizeof(call->codec_state_fp));
 
 	bevent_call_emit(UA_EVENT_CALL_CODEC, call, "%s",
-			 str_isset(param) ? param : "codec");
+			 str_isset(call->codec_prm) ? call->codec_prm : "codec");
+}
+
+
+static void call_codec_notify(struct call *call, const char *param)
+{
+	if (!call)
+		return;
+
+	MAGIC_CHECK(call);
+
+	if (str_isset(param))
+		str_ncpy(call->codec_prm, param, sizeof(call->codec_prm));
+	else
+		call->codec_prm[0] = '\0';
+
+	tmr_cancel(&call->tmr_codec);
+	tmr_start(&call->tmr_codec, CALL_CODEC_DEBOUNCE_MS,
+		  call_codec_debounce_handler, call);
 }
 
 
@@ -996,6 +1063,7 @@ int call_alloc(struct call **callp, const struct config *cfg, struct list *lst,
 	tmr_init(&call->tmr_inv);
 	tmr_init(&call->tmr_answ);
 	tmr_init(&call->tmr_reinv);
+	tmr_init(&call->tmr_codec);
 
 	call->cfg    = cfg;
 	call->acc    = mem_ref(acc);

@@ -444,6 +444,9 @@ static int add_codec_info(struct odict *od_parent, const struct call *call)
 					       (int64_t)ac_tx->srate);
 			err |= odict_entry_add(od, "audio_tx_channels", ODICT_INT,
 					       (int64_t)ac_tx->ch);
+			err |= odict_entry_add(od, "audio_tx_pt", ODICT_INT,
+					       (int64_t)stream_pt_enc(
+						       audio_strm(call_audio(call))));
 		}
 		if (ac_rx) {
 			err |= odict_entry_add(od, "audio_rx", ODICT_STRING, ac_rx->name);
@@ -451,6 +454,9 @@ static int add_codec_info(struct odict *od_parent, const struct call *call)
 					       (int64_t)ac_rx->srate);
 			err |= odict_entry_add(od, "audio_rx_channels", ODICT_INT,
 					       (int64_t)ac_rx->ch);
+			err |= odict_entry_add(od, "audio_rx_pt", ODICT_INT,
+					       (int64_t)audio_rx_payload_type(
+						       call_audio(call)));
 		}
 	}
 
@@ -475,6 +481,9 @@ static int add_codec_info(struct odict *od_parent, const struct call *call)
 				err |= odict_entry_add(od, "video_tx_variant", ODICT_STRING,
 						       vc_tx->variant);
 			}
+			err |= odict_entry_add(od, "video_tx_pt", ODICT_INT,
+					       (int64_t)stream_pt_enc(
+						       video_strm(call_video(call))));
 		}
 		if (vc_rx) {
 			err |= odict_entry_add(od, "video_rx", ODICT_STRING, vc_rx->name);
@@ -482,6 +491,9 @@ static int add_codec_info(struct odict *od_parent, const struct call *call)
 				err |= odict_entry_add(od, "video_rx_variant", ODICT_STRING,
 						       vc_rx->variant);
 			}
+			err |= odict_entry_add(od, "video_rx_pt", ODICT_INT,
+					       (int64_t)video_rx_payload_type(
+						       call_video(call)));
 		}
 	}
 

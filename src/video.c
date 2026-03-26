@@ -1686,6 +1686,15 @@ struct stream *video_strm(const struct video *v)
 }
 
 
+int video_rx_payload_type(const struct video *v)
+{
+	if (!v)
+		return -1;
+
+	return v->vrx.pt_rx;
+}
+
+
 /**
  * Set the current Video Source device name
  *

@@ -1347,6 +1347,15 @@ bool stream_is_ready(const struct stream *strm)
 }
 
 
+bool stream_rtp_established(const struct stream *strm)
+{
+	if (!strm)
+		return false;
+
+	return rtprecv_rtp_established(strm->rx);
+}
+
+
 static void update_menc_muxed(struct list *streaml, bool secure)
 {
 	struct le *le;
