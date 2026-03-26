@@ -225,6 +225,7 @@ void call_hangup(struct call *call, uint16_t scode, const char *reason);
 void call_hangupf(struct call *call, uint16_t scode, const char *reason,
 		  const char *fmt, ...);
 int  call_modify(struct call *call);
+int  call_codec_reinvite(struct call *call, const char *spec);
 int  call_hold(struct call *call, bool hold);
 void call_set_audio_ldir(struct call *call, enum sdp_dir dir);
 void call_set_video_ldir(struct call *call, enum sdp_dir dir);
@@ -1482,6 +1483,9 @@ struct stream *audio_strm(const struct audio *au);
 uint64_t audio_jb_current_value(const struct audio *au);
 int  audio_set_bitrate(struct audio *au, uint32_t bitrate);
 bool audio_rxaubuf_started(const struct audio *au);
+int  audio_sdp_set_codecs(struct audio *a, struct list *aucodecl,
+			  uint32_t ptime);
+int  audio_sdp_peer_reinvite_merge(struct audio *a, const struct account *acc);
 int  audio_update(struct audio *a);
 int  audio_start(struct audio *a);
 int  audio_start_source(struct audio *a, struct list *ausrcl,
