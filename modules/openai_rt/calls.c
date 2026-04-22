@@ -43,11 +43,6 @@ static void mqueue_handler(int id, void *data, void *arg)
 	case MQ_HANGUP:
 		DEBUG_INFO("mqueue_handler: Processing hangup request\n");
 		if (g_oairt.current_call) {
-			/*
-			 * Use ua_hangup() instead of call_hangup() so that
-			 * UA_EVENT_CALL_CLOSED is emitted immediately (same
-			 * behavior as normal UI-driven hangup).
-			 */
 			struct ua *ua = call_get_ua(g_oairt.current_call);
 			if (ua) {
 				ua_hangup(ua, g_oairt.current_call, 0, NULL);
