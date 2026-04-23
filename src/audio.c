@@ -1381,10 +1381,19 @@ int audio_update(struct audio *a)
 		return 0;
 	}
 
+	/* If negotiated direction is inactive, check local direction
+	 * to allow sending when remote replies with inactive during resume */
+	enum sdp_dir ldir = stream_ldir(audio_strm(a));
+	enum sdp_dir send_dir = dir;
+	if (dir == SDP_INACTIVE && (ldir & SDP_SENDONLY)) {
+		/* Use local direction for sending when negotiated is inactive */
+		send_dir = ldir;
+	}
+
 	if (dir & SDP_RECVONLY)
 		err |= audio_decoder_set(a, sc->data, sc->pt, sc->params);
 
-	if (dir & SDP_SENDONLY)
+	if (send_dir & SDP_SENDONLY)
 		err |= audio_encoder_set(a, sc->data, sc->pt, sc->params);
 
 	if (err) {
@@ -1408,7 +1417,7 @@ int audio_update(struct audio *a)
 		aurecv_stop(a->aur);
 	}
 
-	if (dir & SDP_SENDONLY) {
+	if (send_dir & SDP_SENDONLY) {
 		err |= start_source(&a->tx, a, baresip_ausrcl());
 	}
 	else {
