@@ -126,14 +126,24 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 			int qerr;
 			info("openai_rt: Call INCOMING from %s\n", call_peeruri(call));
 			DEBUG_INFO("Incoming call - initiating session setup\n");
-			
+
 			/* Store call reference for later use */
 			g_oairt.current_call = call;
-			
+
 			/* Reset session state */
 			g_oairt.session_ready = false;
 			g_oairt.session_cfg_applied = false;
-			
+
+#ifdef HAVE_OPENAI_WEBRTC
+			if (g_oairt.backend_type == AI_BACKEND_OPENAI_WEBRTC) {
+				int werr = oai_webrtc_init_call();
+				if (werr) {
+					warning("openai_rt: oai_webrtc_init_call failed: %m\n", werr);
+				}
+				break;
+			}
+#endif
+
 			/* Queue event to start WebSocket connection and session setup */
 			qerr = audio_queue_event(EVENT_CALL_START, call);
 			if (qerr) {
@@ -141,20 +151,30 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 			}
 		}
 		break;
-		
+
 	case UA_EVENT_CALL_OUTGOING:
 		{
 			int qerr;
 			info("openai_rt: Call OUTGOING to %s\n", call_peeruri(call));
 			DEBUG_INFO("Outgoing call - initiating session setup\n");
-			
+
 			/* Store call reference for later use */
 			g_oairt.current_call = call;
-			
+
 			/* Reset session state */
 			g_oairt.session_ready = false;
 			g_oairt.session_cfg_applied = false;
-			
+
+#ifdef HAVE_OPENAI_WEBRTC
+			if (g_oairt.backend_type == AI_BACKEND_OPENAI_WEBRTC) {
+				int werr = oai_webrtc_init_call();
+				if (werr) {
+					warning("openai_rt: oai_webrtc_init_call failed: %m\n", werr);
+				}
+				break;
+			}
+#endif
+
 			/* Queue event to start WebSocket connection and session setup */
 			qerr = audio_queue_event(EVENT_CALL_START, call);
 			if (qerr) {
@@ -174,7 +194,32 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 
 			/* Reset audio state for new call */
 			audio_reset_for_new_call();
-			
+
+#ifdef HAVE_OPENAI_WEBRTC
+			if (g_oairt.backend_type == AI_BACKEND_OPENAI_WEBRTC) {
+				/* WebRTC setup runs on its own thread; poll the
+				 * shared session_ready flag with a 15s deadline. */
+				uint64_t start = tmr_jiffies();
+				while (!g_oairt.session_ready
+				       && tmr_jiffies() - start < 15000) {
+					sys_msleep(50);
+				}
+				if (!g_oairt.session_ready) {
+					warning("openai_rt: WebRTC session "
+						"setup did not become ready "
+						"within 15s — hanging up\n");
+					calls_hangup();
+					break;
+				}
+				if (audio_ready_for_call()) {
+					DEBUG_INFO("Call established (webrtc) "
+						   "— starting audio threads\n");
+					audio_restart_threads();
+				}
+				break;
+			}
+#endif
+
 			/* Check if session setup is ready - if not, we need to wait or hang up */
 			if (!websocket_is_ready()) {
 				int qerr;
@@ -229,8 +274,16 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 		g_oairt.session_cfg_applied = false;
 		g_oairt.current_call = NULL;
 
-		/* Queue event for WebSocket thread to handle */
-		audio_queue_event(EVENT_CALL_END, NULL);
+#ifdef HAVE_OPENAI_WEBRTC
+		if (g_oairt.backend_type == AI_BACKEND_OPENAI_WEBRTC) {
+			oai_webrtc_close_call();
+		}
+		else
+#endif
+		{
+			/* Queue event for WebSocket thread to handle */
+			audio_queue_event(EVENT_CALL_END, NULL);
+		}
 
 		/* Reset state */
 		g_oairt.speech_active = false;

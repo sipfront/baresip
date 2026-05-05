@@ -935,19 +935,31 @@ static void handle_response_done_cb(const char *response_json, void *arg)
  /* Initialize WebSocket */
  int websocket_init(void)
  {
- 
+
      g_oairt.ws_state = WS_DISCONNECTED;
      g_oairt.ws_context = NULL; /* Will be created in thread */
      g_oairt.ws_client = NULL;
- 
+
      /* Initialize message queues */
      list_init(&g_oairt.to_openai_queue);
      list_init(&g_oairt.from_openai_queue);
- 
+
      /* Initialize mutex and condition variable */
      pthread_mutex_init(&g_oairt.ws_mutex, NULL);
      pthread_cond_init(&g_oairt.ws_cond, NULL);
- 
+
+#ifdef HAVE_OPENAI_WEBRTC
+     /* The WebSocket thread is irrelevant for the WebRTC backend — that
+      * backend opens its own libdatachannel peer connection per call. Skip
+      * spinning up the WS thread (and its endless reconnect loop). */
+     if (g_oairt.backend_type == AI_BACKEND_OPENAI_WEBRTC) {
+         info("openai_rt: WebRTC backend selected — skipping WebSocket "
+              "thread\n");
+         g_oairt.ws_thread_running = false;
+         return 0;
+     }
+#endif
+
      /* Start WebSocket thread */
      g_oairt.ws_thread_running = true;
      int ret = pthread_create(&g_oairt.ws_thread, NULL, websocket_thread, NULL);

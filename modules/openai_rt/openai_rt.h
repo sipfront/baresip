@@ -151,6 +151,14 @@ size_t decode_audio_base64(const char *data, uint8_t **out);
 int json_escape(char **dst, const char *src);
 int read_config(void);
 
+#ifdef HAVE_OPENAI_WEBRTC
+/* Per-call WebRTC backend (defined in openai_webrtc.c) */
+int oai_webrtc_init_call(void);
+void oai_webrtc_close_call(void);
+int oai_webrtc_send_audio(const int16_t *s16, size_t sampc);
+int oai_webrtc_dc_send(const char *json_msg);
+#endif
+
 
 /* Debug macros */
 #define DEBUG_INFO(...) info("openai_rt: " __VA_ARGS__)

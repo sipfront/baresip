@@ -255,16 +255,27 @@ void handle_incoming_audio(const int16_t *s16_data, size_t sampc)
         DEBUG_INFO("handle_incoming_audio: No audio data or zero samples\n");
         return;
     }
-    
+
     if (!g_oairt.call_active) {
         DEBUG_INFO("handle_incoming_audio: Call not active, dropping audio\n");
         return;
     }
-    
+
     if (!model || !model->build_audio_append) {
         warning("openai_rt: AI model not initialized\n");
         return;
     }
+
+#ifdef HAVE_OPENAI_WEBRTC
+    /* WebRTC backend: bypass the base64+WebSocket queue path. Encode PCM to
+     * Opus and push as RTP into the libdatachannel audio track. The PCM
+     * pipeline upstream (auplay thread, queues, any in-process mixing) is
+     * untouched. */
+    if (g_oairt.backend_type == AI_BACKEND_OPENAI_WEBRTC) {
+        (void)oai_webrtc_send_audio(s16_data, sampc);
+        return;
+    }
+#endif
 
     size_t byte_len = sampc * sizeof(int16_t);
     //info("[AUDIO TX] Received %zu samples (%zu bytes) from pipeline\n", sampc, byte_len);
