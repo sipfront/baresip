@@ -221,6 +221,15 @@ int read_config(void)
         g_oairt.backend_type = AI_BACKEND_OPENAI_REALTIME;
     } else if (str_casecmp(g_oairt.backend, "gemini_live") == 0) {
         g_oairt.backend_type = AI_BACKEND_GEMINI_LIVE;
+    } else if (str_casecmp(g_oairt.backend, "openai_webrtc") == 0) {
+#ifdef HAVE_OPENAI_WEBRTC
+        g_oairt.backend_type = AI_BACKEND_OPENAI_WEBRTC;
+#else
+        warning("openai_rt: backend 'openai_webrtc' selected but module was built "
+                "without USE_OPENAI_WEBRTC; falling back to openai_realtime\n");
+        g_oairt.backend_type = AI_BACKEND_OPENAI_REALTIME;
+        str_ncpy(g_oairt.backend, "openai_realtime", sizeof(g_oairt.backend));
+#endif
     } else {
         warning("openai_rt: Unknown backend '%s', defaulting to openai_realtime\n", g_oairt.backend);
         g_oairt.backend_type = AI_BACKEND_OPENAI_REALTIME;

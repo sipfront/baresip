@@ -20,9 +20,13 @@ struct ai_model *get_ai_model(void)
 		return &openai_model;
 	case AI_BACKEND_GEMINI_LIVE:
 		return &gemini_model;
+#ifdef HAVE_OPENAI_WEBRTC
+	case AI_BACKEND_OPENAI_WEBRTC:
+		return &openai_webrtc_model;
+#endif
 	default:
 		/* Default to OpenAI if unknown */
-		warning("openai_rt: Unknown backend type %d, defaulting to OpenAI\n", 
+		warning("openai_rt: Unknown backend type %d, defaulting to OpenAI\n",
 		        g_oairt.backend_type);
 		return &openai_model;
 	}

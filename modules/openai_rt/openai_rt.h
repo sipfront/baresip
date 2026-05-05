@@ -41,6 +41,7 @@ struct ws_message {
 enum ai_backend_type {
 	AI_BACKEND_OPENAI_REALTIME,
 	AI_BACKEND_GEMINI_LIVE,
+	AI_BACKEND_OPENAI_WEBRTC,
 };
 
 /* Global module state */

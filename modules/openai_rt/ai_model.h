@@ -164,6 +164,9 @@ struct ai_model {
 /* AI model implementations - exported from their respective files */
 extern struct ai_model openai_model;
 extern struct ai_model gemini_model;
+#ifdef HAVE_OPENAI_WEBRTC
+extern struct ai_model openai_webrtc_model;
+#endif
 
 /* Get the current AI model implementation based on configuration */
 struct ai_model *get_ai_model(void);

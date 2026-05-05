@@ -89,3 +89,60 @@ curl -X POST https://api.openai.com/v1/realtime/client_secrets \
 ```
 
 Use the returned `value` as your `openai_rt_api_key` in the baresip configuration.
+
+## OpenAI Realtime WebRTC backend (optional)
+
+In addition to the WebSocket-based path described above, the module can connect
+to the OpenAI Realtime API over **WebRTC**. Audio travels as Opus over RTP/SRTP/UDP
+on a media track; events (session.update, response.done, function_call, transcripts,
+speech_started, etc.) travel over an SCTP data channel labelled `oai-events`.
+Same JSON event shapes as the WebSocket variant.
+
+Why use it: eliminates ~33% base64 inflation and TCP head-of-line blocking that
+the WebSocket-over-TCP transport suffers from when carrying real-time audio.
+
+### Build
+
+The WebRTC backend depends on libdatachannel (full WebRTC stack: ICE + DTLS +
+SRTP + SCTP) and libopus. It is gated behind a CMake option, **off** by default
+so existing builds are unaffected.
+
+```bash
+cmake -B build -DUSE_OPENAI_WEBRTC=ON
+cmake --build build -j
+```
+
+In the Debian docker build, install `libdatachannel-dev` (and `libopus-dev`,
+already present) before configuring. If `libdatachannel-dev` is not in your
+distro, build from source:
+
+```bash
+git clone --recursive https://github.com/paullouisageneau/libdatachannel.git
+cd libdatachannel && cmake -B build -DUSE_GNUTLS=0 -DUSE_NICE=0
+cmake --build build -j && cmake --install build
+```
+
+### Configure
+
+Set the backend in your baresip config:
+
+```
+openai_rt_backend   openai_webrtc
+openai_rt_api_key   sk-...                # standing API key (used to mint
+                                          # ephemeral keys per call)
+openai_rt_prompt    You are a helpful voice assistant.
+```
+
+The standing API key is used to POST `https://api.openai.com/v1/realtime/sessions`
+once per call to obtain an ephemeral `client_secret.value`, which is then used
+as the bearer token in the SDP exchange against
+`https://api.openai.com/v1/realtime?model=gpt-realtime`.
+
+### What's preserved, what's replaced
+
+The PCM audio pipeline in `audio.c` (auplay/ausrc threads, ring buffers,
+injection buffer, background-noise mixing point) is **unchanged**. Only the
+producer and consumer of those queues change: instead of base64-encoding into
+a JSON message and sending over a WebSocket, the WebRTC backend Opus-encodes
+PCM16 frames and pushes them as RTP into the libdatachannel audio track.
+Reverse path: incoming RTP → Opus decode → existing `injection_buffer`.

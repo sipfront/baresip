@@ -19,6 +19,19 @@ if(NOT SNDFILE_FOUND)
   message(FATAL_ERROR "libsndfile not found")
 endif()
 
+# Optional: OpenAI Realtime WebRTC backend (requires libdatachannel + libopus)
+option(USE_OPENAI_WEBRTC
+       "Build OpenAI Realtime WebRTC backend (needs libdatachannel + libopus)"
+       OFF)
+
+if(USE_OPENAI_WEBRTC)
+    pkg_check_modules(LIBDATACHANNEL REQUIRED libdatachannel)
+    pkg_check_modules(OPUS REQUIRED opus)
+    message(STATUS "openai_rt: OpenAI Realtime WebRTC backend enabled "
+                   "(libdatachannel ${LIBDATACHANNEL_VERSION}, "
+                   "opus ${OPUS_VERSION})")
+endif()
+
 list(APPEND MODULES_DETECTED ${PROJECT_NAME})
 set(MODULES_DETECTED ${MODULES_DETECTED} PARENT_SCOPE)
 
@@ -33,6 +46,12 @@ set(SRCS
     gemini.c
     ai_model.c)
 
+if(USE_OPENAI_WEBRTC)
+    list(APPEND SRCS
+        openai_webrtc.c
+        openai_webrtc_session.c)
+endif()
+
 if(STATIC)
     add_library(${PROJECT_NAME} OBJECT ${SRCS})
 else()
@@ -45,6 +64,12 @@ target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE
     ${WEBSOCKETS_INCLUDE_DIRS}
     ${JSON_C_INCLUDE_DIRS}
     ${SNDFILE_INCLUDE_DIR})
+
+if(USE_OPENAI_WEBRTC)
+    target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE
+        ${LIBDATACHANNEL_INCLUDE_DIRS}
+        ${OPUS_INCLUDE_DIRS})
+endif()
 
 # Handle library directories (only if they exist)
 if(CURL_LIBRARY_DIRS)
@@ -59,6 +84,15 @@ if(JSON_C_LIBRARY_DIRS)
     target_link_directories(${PROJECT_NAME} PRIVATE ${JSON_C_LIBRARY_DIRS})
 endif()
 
+if(USE_OPENAI_WEBRTC)
+    if(LIBDATACHANNEL_LIBRARY_DIRS)
+        target_link_directories(${PROJECT_NAME} PRIVATE ${LIBDATACHANNEL_LIBRARY_DIRS})
+    endif()
+    if(OPUS_LIBRARY_DIRS)
+        target_link_directories(${PROJECT_NAME} PRIVATE ${OPUS_LIBRARY_DIRS})
+    endif()
+endif()
+
 # Link libraries - IMPORTANT: Add baresip core libraries
 target_link_libraries(${PROJECT_NAME} PRIVATE
     ${RE_LIBRARY}
@@ -66,6 +100,13 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     ${WEBSOCKETS_LIBRARIES}
     ${JSON_C_LIBRARIES}
     ${SNDFILE_LIBRARIES})
+
+if(USE_OPENAI_WEBRTC)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE HAVE_OPENAI_WEBRTC=1)
+    target_link_libraries(${PROJECT_NAME} PRIVATE
+        ${LIBDATACHANNEL_LIBRARIES}
+        ${OPUS_LIBRARIES})
+endif()
 
 # Add additional system libraries for MODULE builds
 if(NOT STATIC)
