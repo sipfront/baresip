@@ -556,18 +556,16 @@ static void *setup_thread_main(void *arg)
 	 * rtcSendMessage(track, opus_payload, len) wraps in RTP automatically,
 	 * and the receive callback is invoked with depacketized Opus payloads
 	 * once rtcChainRtcpReceivingSession is called. */
-	rtcPacketizationHandlerInit pi = {0};
+	rtcPacketizerInit pi = {0};
 	pi.ssrc = ti.ssrc;
 	pi.payloadType = OAI_OPUS_PAYLOAD_TYPE;
 	pi.clockRate = OAI_OPUS_CLOCK_RATE;
 	pi.sequenceNumber = (uint16_t)(rand_u32() & 0xFFFF);
 	pi.timestamp = rand_u32();
 	pi.cname = "openai-rt";
-	pi.nalSeparator = RTC_NAL_SEPARATOR_DEFAULT;
-	pi.maxFragmentSize = 0;
 
-	if (rtcSetOpusPacketizationHandler(track, &pi) != RTC_ERR_SUCCESS) {
-		warning("openai_rt: webrtc: rtcSetOpusPacketizationHandler "
+	if (rtcSetOpusPacketizer(track, &pi) != RTC_ERR_SUCCESS) {
+		warning("openai_rt: webrtc: rtcSetOpusPacketizer "
 			"failed (continuing without auto-packetization)\n");
 	}
 	rtcChainRtcpReceivingSession(track);

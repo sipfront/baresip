@@ -25,10 +25,10 @@ option(USE_OPENAI_WEBRTC
        OFF)
 
 if(USE_OPENAI_WEBRTC)
-    pkg_check_modules(LIBDATACHANNEL REQUIRED libdatachannel)
+    find_package(LibDataChannel REQUIRED CONFIG)
     pkg_check_modules(OPUS REQUIRED opus)
     message(STATUS "openai_rt: OpenAI Realtime WebRTC backend enabled "
-                   "(libdatachannel ${LIBDATACHANNEL_VERSION}, "
+                   "(libdatachannel ${LibDataChannel_VERSION}, "
                    "opus ${OPUS_VERSION})")
 endif()
 
@@ -67,7 +67,6 @@ target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE
 
 if(USE_OPENAI_WEBRTC)
     target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE
-        ${LIBDATACHANNEL_INCLUDE_DIRS}
         ${OPUS_INCLUDE_DIRS})
 endif()
 
@@ -85,9 +84,6 @@ if(JSON_C_LIBRARY_DIRS)
 endif()
 
 if(USE_OPENAI_WEBRTC)
-    if(LIBDATACHANNEL_LIBRARY_DIRS)
-        target_link_directories(${PROJECT_NAME} PRIVATE ${LIBDATACHANNEL_LIBRARY_DIRS})
-    endif()
     if(OPUS_LIBRARY_DIRS)
         target_link_directories(${PROJECT_NAME} PRIVATE ${OPUS_LIBRARY_DIRS})
     endif()
@@ -104,7 +100,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 if(USE_OPENAI_WEBRTC)
     target_compile_definitions(${PROJECT_NAME} PRIVATE HAVE_OPENAI_WEBRTC=1)
     target_link_libraries(${PROJECT_NAME} PRIVATE
-        ${LIBDATACHANNEL_LIBRARIES}
+        LibDataChannel::LibDataChannel
         ${OPUS_LIBRARIES})
 endif()
 
