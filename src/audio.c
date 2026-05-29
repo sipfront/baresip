@@ -710,6 +710,24 @@ void audio_call_telev_handler(const struct audio *au, int key, bool end)
 }
 
 
+void call_emit_send_dtmf(const struct audio *au, char key)
+{
+	struct call *call = au ? au->arg : NULL;
+	const char *p;
+
+	if (!call)
+		return;
+
+	bevent_call_emit(UA_EVENT_CALL_SEND_DTMF_START, call, "%c", key);
+	p = strchr("0123456789ABCD*#", key);
+	if (p)
+		bevent_call_emit(UA_EVENT_CALL_SEND_DTMF_0 +
+				 (enum ua_event)(p - "0123456789ABCD*#"),
+				 call, "%c", key);
+	bevent_call_emit(UA_EVENT_CALL_SEND_DTMF_END, call, "%c", key);
+}
+
+
 /*
  * Read samples from Audio Source
  *
