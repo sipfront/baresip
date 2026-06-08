@@ -208,6 +208,7 @@ static int in_band_dtmf_send(struct re_printf *pf, void *arg)
 	const char *digits = carg->prm;
 	struct in_band_dtmf_filt_enc *st;
 	int err = 0;
+	int enc_err;
 	size_t i;
 	char digit;
 	size_t old_pos;
@@ -238,13 +239,16 @@ static int in_band_dtmf_send(struct re_printf *pf, void *arg)
 		case '4': case '5': case '6': case 'B':
 		case '7': case '8': case '9': case 'C':
 		case '*': case '0': case '#': case 'D':
-			call_emit_send_dtmf(st->au, digit);
-			err |= autone_dtmf(st->mb, st->srate, digit);
+			enc_err = autone_dtmf(st->mb, st->srate, digit);
+			err |= enc_err;
+			if (enc_err)
+				break;
 			/* Reduce tone length to 0.1s */
 			mbuf_set_end(st->mb,
 				st->mb->end - 9 * bytes_count);
 			mbuf_skip_to_end(st->mb);
 			mbuf_fill(st->mb, 0, bytes_count);
+			call_emit_send_dtmf(st->au, digit);
 			break;
 
 		default: warning("in_band_dtmf: skip unsupported DTMF "
