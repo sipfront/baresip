@@ -88,6 +88,7 @@ static void mqueue_handler(int id, void *data, void *arg)
 	case MQ_TRANSFER:
 		{
 			char *destination = (char *)data;
+			int xfer_err;
 
 			if (!destination) {
 				warning("openai_rt: transfer: missing destination\n");
@@ -95,7 +96,7 @@ static void mqueue_handler(int id, void *data, void *arg)
 			}
 
 			if (g_oairt.current_call) {
-				int xfer_err = call_hold(g_oairt.current_call, true);
+				xfer_err = call_hold(g_oairt.current_call, true);
 				if (xfer_err) {
 					warning("openai_rt: call_hold before transfer failed: %m\n",
 					        xfer_err);
@@ -118,7 +119,7 @@ static void mqueue_handler(int id, void *data, void *arg)
 			mem_deref(destination);
 		}
 		break;
-		
+
 	case MQ_OPENAI_RESPONSE:
 		{
 			char *response_json = (char *)data;

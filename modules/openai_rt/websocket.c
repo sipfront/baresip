@@ -27,6 +27,8 @@ static void handle_speech_started_cb(void *arg);
 static void handle_function_call_cb(const char *call_id, const char *name,
                                     const char *arguments, void *arg);
 static void handle_response_done_cb(const char *response_json, void *arg);
+static int start_transfer_after_tts(const char *destination,
+                                    const char *call_id);
  
  /* WebSocket protocols (local binding for callbacks; NOT sent as WS subprotocol) */
  static const struct lws_protocols protocols[] = {
@@ -149,6 +151,87 @@ static void send_function_call_output(const char *call_id, const char *output)
         mem_deref(json_msg);
     }
 }
+
+struct xfer_after_tts {
+	char *destination;
+	char *call_id;
+};
+
+static void *xfer_after_tts_thread(void *arg)
+{
+	struct xfer_after_tts *w = arg;
+
+	while (g_oairt.call_active && audio_tts_playback_pending())
+		sys_msleep(TRANSFER_DRAIN_POLL_MS);
+
+	if (g_oairt.call_active) {
+		int err;
+
+		sys_msleep(TRANSFER_POST_DRAIN_MS);
+		err = calls_transfer(w->destination);
+		if (!err) {
+			char output[512];
+
+			re_snprintf(output, sizeof(output),
+			    "Call transfer initiated to %s", w->destination);
+			send_function_call_output(w->call_id, output);
+		}
+		else {
+			char error_msg[256];
+
+			re_snprintf(error_msg, sizeof(error_msg),
+			    "Error: Failed to transfer call to '%s'", w->destination);
+			send_function_call_output(w->call_id, error_msg);
+			warning("openai_rt: Failed to transfer to '%s': %m\n",
+			    w->destination, err);
+		}
+
+		if (g_oairt.backend_type == AI_BACKEND_OPENAI_REALTIME)
+			send_response_create();
+	}
+
+	mem_deref(w->destination);
+	mem_deref(w->call_id);
+	mem_deref(w);
+	return NULL;
+}
+
+
+static int start_transfer_after_tts(const char *destination,
+                                    const char *call_id)
+{
+	struct xfer_after_tts *w;
+	pthread_t tid;
+	int err;
+
+	w = mem_zalloc(sizeof(*w), NULL);
+	if (!w)
+		return ENOMEM;
+
+	err = str_dup(&w->destination, destination);
+	if (err)
+		goto out;
+
+	err = str_dup(&w->call_id, call_id);
+	if (err)
+		goto out;
+
+	err = pthread_create(&tid, NULL, xfer_after_tts_thread, w);
+	if (err) {
+		warning("openai_rt: failed to start transfer-after-TTS thread\n");
+		goto out;
+	}
+
+	pthread_detach(tid);
+	return 0;
+
+out:
+	mem_deref(w->destination);
+	mem_deref(w->call_id);
+	mem_deref(w);
+	return err;
+}
+
 
 static void send_response_create(void)
 {
@@ -375,8 +458,6 @@ static void handle_function_call_cb(const char *call_id, const char *name,
 			send_response_create();
 		}
 	} else if (strcmp(name, AI_TOOL_TRANSFER_CALL.name) == 0) {
-		DEBUG_INFO("openai_rt: Executing transfer_call function\n");
-
 		struct json_object *args_obj = json_tokener_parse(arguments);
 		if (!args_obj) {
 			warning("openai_rt: Failed to parse transfer_call arguments\n");
@@ -390,21 +471,17 @@ static void handle_function_call_cb(const char *call_id, const char *name,
 		    json_object_is_type(dest_obj, json_type_string)) {
 			const char *destination = json_object_get_string(dest_obj);
 			if (destination && *destination) {
-				int err = calls_transfer(destination);
-				if (!err) {
-					char output[512];
-					re_snprintf(output, sizeof(output),
-					    "Call transfer initiated to %s",
-					    destination);
-					send_function_call_output(call_id, output);
-				} else {
+				int err = start_transfer_after_tts(destination, call_id);
+				if (err) {
 					char error_msg[256];
 					re_snprintf(error_msg, sizeof(error_msg),
-					    "Error: Failed to transfer call to '%s'",
+					    "Error: Failed to schedule transfer to '%s'",
 					    destination);
 					send_function_call_output(call_id, error_msg);
-					warning("openai_rt: Failed to transfer to '%s': %m\n",
+					warning("openai_rt: Failed to schedule transfer to '%s': %m\n",
 					    destination, err);
+					if (g_oairt.backend_type == AI_BACKEND_OPENAI_REALTIME)
+						send_response_create();
 				}
 			} else {
 				send_function_call_output(call_id,
@@ -415,10 +492,6 @@ static void handle_function_call_cb(const char *call_id, const char *name,
 			    "Error: Missing or invalid 'destination' parameter");
 		}
 		json_object_put(args_obj);
-
-		if (g_oairt.backend_type == AI_BACKEND_OPENAI_REALTIME) {
-			send_response_create();
-		}
 	} else {
         /* This shouldn't happen if validation above worked, but handle it anyway */
         warning("openai_rt: Unknown function call: %s (but was enabled in config?)\n", name);

@@ -134,6 +134,7 @@ void audio_flush_accumulated(void);
 void audio_flush_uplink_batch(void);
 void audio_clear_injection_buffer(void);
 bool audio_source_ready_for_injection(void);
+bool audio_tts_playback_pending(void);
 bool audio_threads_running(void);
 bool audio_ready_for_call(void);
 
@@ -232,6 +233,10 @@ struct audio_state {
 #define INJECTION_BUFFER_MIN_SIZE 32000         /* Minimum size in samples (4 seconds @ 8kHz) */
 #define INJECTION_BUFFER_MAX_SIZE 2000000       /* Maximum size in samples (250 seconds @ 8kHz) */
 #define INJECTION_BUFFER_GROWTH_FACTOR 2        /* Multiply by this when growing */
+
+/* Defer blind transfer until TTS injection buffer has drained */
+#define TRANSFER_DRAIN_POLL_MS 50
+#define TRANSFER_POST_DRAIN_MS 500
 
 /* Global audio state - defined in audio.c */
 extern struct audio_state g_audio;
