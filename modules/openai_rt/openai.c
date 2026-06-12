@@ -119,8 +119,8 @@ static int openai_add_auth_headers(void *in, size_t len);
 static int openai_build_session_update(const char *prompt, char **json_msg);
 static int openai_build_audio_append(const char *base64_audio, char **json_msg);
 static int openai_build_response_create(const char *instructions, char **json_msg);
-static int openai_build_function_call_output(const char *call_id, const char *output,
-                                             char **json_msg);
+static int openai_build_function_call_output(const char *call_id, const char *name,
+                                             const char *output, char **json_msg);
 static int openai_parse_message(const char *json_str,
                                void (*audio_delta_cb)(const char *base64_audio, void *arg),
                                void (*session_updated_cb)(void *arg),
@@ -480,11 +480,13 @@ static int openai_build_response_create(const char *instructions, char **json_ms
 	return err;
 }
 
-static int openai_build_function_call_output(const char *call_id, const char *output,
-                                            char **json_msg)
+static int openai_build_function_call_output(const char *call_id, const char *name,
+                                            const char *output, char **json_msg)
 {
 	char *escaped_output = NULL;
 	int err;
+
+	(void)name;
 
 	if (!call_id || !output || !json_msg) {
 		return EINVAL;

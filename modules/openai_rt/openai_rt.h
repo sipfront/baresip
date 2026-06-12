@@ -63,6 +63,8 @@ struct openai_rt {
     bool call_active;
     struct call *current_call;
     bool session_cfg_applied;   /* set after we see type=session.updated */
+    bool gemini_xfer_scheduled; /* Gemini: transfer already scheduled */
+    bool gemini_turn_had_audio; /* Gemini: model audio in current turn */
     
     /* WebSocket state */
     enum ws_state ws_state;

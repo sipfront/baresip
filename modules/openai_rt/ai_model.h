@@ -132,12 +132,13 @@ struct ai_model {
 	/**
 	 * Build function call output message
 	 * @param call_id  Function call ID
+	 * @param name     Function name (required for Gemini toolResponse)
 	 * @param output  Function call output text
 	 * @param json_msg  Output: JSON message string (allocated, must be freed)
 	 * @return 0 on success, error code otherwise
 	 */
-	int (*build_function_call_output)(const char *call_id, const char *output,
-	                                  char **json_msg);
+	int (*build_function_call_output)(const char *call_id, const char *name,
+	                                  const char *output, char **json_msg);
 	
 	/**
 	 * Parse incoming message from AI model

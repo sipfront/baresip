@@ -213,6 +213,8 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 			/* Mark call as active */
 			g_oairt.call_active = true;
 			g_oairt.current_call = call;
+			g_oairt.gemini_xfer_scheduled = false;
+			g_oairt.gemini_turn_had_audio = false;
 
 			/* Reset audio state for new call */
 			audio_reset_for_new_call();
