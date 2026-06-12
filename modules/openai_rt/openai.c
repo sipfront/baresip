@@ -83,15 +83,32 @@ const struct ai_tool_call AI_TOOL_API_CALL = {
 		"}"
 };
 
+const struct ai_tool_call AI_TOOL_TRANSFER_CALL = {
+	.name = "transfer_call",
+	.description = "Transfer the active call to another destination (blind transfer)",
+	.parameters_json =
+		"{"
+			"\"type\": \"object\","
+			"\"properties\": {"
+				"\"destination\": {"
+					"\"type\": \"string\","
+					"\"description\": \"SIP URI or phone number to transfer the call to (e.g., 'sip:agent@example.com' or '+43123456789')\""
+				"}"
+			"},"
+			"\"required\": [\"destination\"]"
+		"}"
+};
+
 /* Array of all available tool calls */
 const struct ai_tool_call *AI_AVAILABLE_TOOLS[] = {
 	&AI_TOOL_HANGUP_CALL,
 	&AI_TOOL_SEND_DTMF,
 	&AI_TOOL_API_CALL,
+	&AI_TOOL_TRANSFER_CALL,
 	NULL  /* Sentinel */
 };
 
-const size_t AI_AVAILABLE_TOOLS_COUNT = 3;
+const size_t AI_AVAILABLE_TOOLS_COUNT = 4;
 
 /* Forward declarations */
 static int openai_init(struct openai_rt *ort);

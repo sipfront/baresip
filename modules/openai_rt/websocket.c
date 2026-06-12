@@ -374,6 +374,51 @@ static void handle_function_call_cb(const char *call_id, const char *name,
 		if (g_oairt.backend_type == AI_BACKEND_OPENAI_REALTIME) {
 			send_response_create();
 		}
+	} else if (strcmp(name, AI_TOOL_TRANSFER_CALL.name) == 0) {
+		DEBUG_INFO("openai_rt: Executing transfer_call function\n");
+
+		struct json_object *args_obj = json_tokener_parse(arguments);
+		if (!args_obj) {
+			warning("openai_rt: Failed to parse transfer_call arguments\n");
+			send_function_call_output(call_id,
+			    "Error: Failed to parse function arguments");
+			return;
+		}
+
+		struct json_object *dest_obj = NULL;
+		if (json_object_object_get_ex(args_obj, "destination", &dest_obj) &&
+		    json_object_is_type(dest_obj, json_type_string)) {
+			const char *destination = json_object_get_string(dest_obj);
+			if (destination && *destination) {
+				int err = calls_transfer(destination);
+				if (!err) {
+					char output[512];
+					re_snprintf(output, sizeof(output),
+					    "Call transfer initiated to %s",
+					    destination);
+					send_function_call_output(call_id, output);
+				} else {
+					char error_msg[256];
+					re_snprintf(error_msg, sizeof(error_msg),
+					    "Error: Failed to transfer call to '%s'",
+					    destination);
+					send_function_call_output(call_id, error_msg);
+					warning("openai_rt: Failed to transfer to '%s': %m\n",
+					    destination, err);
+				}
+			} else {
+				send_function_call_output(call_id,
+				    "Error: Missing or empty 'destination' parameter");
+			}
+		} else {
+			send_function_call_output(call_id,
+			    "Error: Missing or invalid 'destination' parameter");
+		}
+		json_object_put(args_obj);
+
+		if (g_oairt.backend_type == AI_BACKEND_OPENAI_REALTIME) {
+			send_response_create();
+		}
 	} else {
         /* This shouldn't happen if validation above worked, but handle it anyway */
         warning("openai_rt: Unknown function call: %s (but was enabled in config?)\n", name);

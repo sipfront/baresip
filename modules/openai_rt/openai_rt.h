@@ -247,6 +247,7 @@ void audio_free_frame(struct audio_frame *frame);
 void calls_hangup(void);
 void calls_send_digit(char key);
 int calls_send_dtmf(const char *digits);
+int calls_transfer(const char *destination);
 int calls_api_call(const char *method, const char *uri,
                    const char *content_type, const char *auth_type,
                    const char *auth_username, const char *auth_password,

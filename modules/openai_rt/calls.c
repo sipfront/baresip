@@ -13,6 +13,7 @@ enum call_mq_events {
 	MQ_HANGUP = 0,
 	MQ_SEND_DIGIT,
 	MQ_API_CALL,
+	MQ_TRANSFER,
 	MQ_OPENAI_RESPONSE,
 };
 
@@ -81,6 +82,40 @@ static void mqueue_handler(int id, void *data, void *arg)
 			/* but since it's a tool call from the AI, we need to return the result. */
 			/* However, the tool call itself is triggered by a message from OpenAI */
 			/* which is processed in the RE thread. */
+		}
+		break;
+
+	case MQ_TRANSFER:
+		{
+			char *destination = (char *)data;
+
+			if (!destination) {
+				warning("openai_rt: transfer: missing destination\n");
+				break;
+			}
+
+			if (g_oairt.current_call) {
+				int xfer_err = call_hold(g_oairt.current_call, true);
+				if (xfer_err) {
+					warning("openai_rt: call_hold before transfer failed: %m\n",
+					        xfer_err);
+				}
+
+				xfer_err = call_transfer(g_oairt.current_call, destination);
+				if (xfer_err) {
+					warning("openai_rt: call_transfer to '%s' failed: %m\n",
+					        destination, xfer_err);
+				}
+				else {
+					info("openai_rt: call transfer initiated to %s\n",
+					     destination);
+				}
+			}
+			else {
+				warning("openai_rt: transfer: no active call\n");
+			}
+
+			mem_deref(destination);
 		}
 		break;
 		
@@ -405,6 +440,56 @@ int calls_send_dtmf(const char *digits)
 	}
 	
 	DEBUG_INFO("calls_send_dtmf: DTMF string '%s' sent successfully\n", digits);
+	return 0;
+}
+
+
+/**
+ * Transfer the active call - thread-safe
+ *
+ * @param destination  SIP URI or phone number to transfer to
+ * @return 0 if success, error code otherwise
+ */
+int calls_transfer(const char *destination)
+{
+	char *dest_copy = NULL;
+	int err;
+
+	if (calls_state.shutting_down) {
+		DEBUG_INFO("calls_transfer: Ignoring transfer during shutdown\n");
+		return EINTR;
+	}
+
+	if (!calls_state.mq) {
+		warning("openai_rt: calls_transfer: mqueue not initialized\n");
+		return EINVAL;
+	}
+
+	if (!destination || !*destination) {
+		warning("openai_rt: calls_transfer: Empty or NULL destination\n");
+		return EINVAL;
+	}
+
+	if (!g_oairt.current_call) {
+		warning("openai_rt: calls_transfer: No active call\n");
+		return ENOENT;
+	}
+
+	err = str_dup(&dest_copy, destination);
+	if (err) {
+		warning("openai_rt: Failed to duplicate transfer destination: %m\n",
+		        err);
+		return err;
+	}
+
+	DEBUG_INFO("calls_transfer: Queuing transfer to '%s'\n", destination);
+	err = mqueue_push(calls_state.mq, MQ_TRANSFER, dest_copy);
+	if (err) {
+		warning("openai_rt: Failed to queue transfer: %m\n", err);
+		mem_deref(dest_copy);
+		return err;
+	}
+
 	return 0;
 }
 
