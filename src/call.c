@@ -106,6 +106,7 @@ struct call {
 	struct tmr tmr_codec_rinv; /**< retry codec re-INVITE when SDP busy   */
 	char codec_rinv_spec[128]; /**< pending spec for tmr_codec_rinv       */
 	uint8_t codec_rinv_retry;  /**< retry count for deferred re-INVITE      */
+	char staged_sess_hdrs[384]; /**< RFC4028 hdrs for next in-dialog reply */
 };
 
 
@@ -1232,6 +1233,290 @@ void call_set_custom_hdrs(struct call *call, const struct list *hdrs)
 }
 
 
+int call_custom_hdr_add(struct call *call, const char *name, const char *fmt,
+			...)
+{
+	va_list ap;
+	char *value = NULL;
+	int err;
+
+	if (!call || !name || !fmt)
+		return EINVAL;
+
+	va_start(ap, fmt);
+	err = re_vsdprintf(&value, fmt, ap);
+	va_end(ap);
+	if (err)
+		return err;
+
+	err = custom_hdrs_add(&call->custom_hdrs, name, "%s", value);
+	mem_deref(value);
+
+	return err;
+}
+
+
+void call_custom_hdr_remove(struct call *call, const char *name)
+{
+	struct le *le, *next;
+	struct pl pl_name;
+
+	if (!call || !name)
+		return;
+
+	pl_set_str(&pl_name, name);
+
+	for (le = list_head(&call->custom_hdrs); le; le = next) {
+		struct sip_hdr *hdr = le->data;
+
+		next = le->next;
+		if (!pl_casecmp(&hdr->name, &pl_name)) {
+			list_unlink(le);
+			mem_deref(hdr);
+		}
+	}
+}
+
+
+int call_set_sess_hdrs(struct call *call, const char *hdrs)
+{
+	size_t len;
+
+	if (!call || !call->sess)
+		return EINVAL;
+
+	if (!hdrs || !*hdrs)
+		return sipsess_set_hdrs(call->sess, NULL);
+
+	len = str_len(hdrs);
+	return sipsess_set_hdrs(call->sess, "%b", hdrs, len);
+}
+
+
+void call_stage_sess_hdrs(struct call *call, const char *hdrs)
+{
+	if (!call)
+		return;
+
+	if (!hdrs || !hdrs[0]) {
+		call->staged_sess_hdrs[0] = '\0';
+		return;
+	}
+
+	str_ncpy(call->staged_sess_hdrs, hdrs, sizeof(call->staged_sess_hdrs));
+}
+
+
+void call_apply_staged_sess_hdrs(struct call *call)
+{
+	int err;
+
+	if (!call || !call->staged_sess_hdrs[0])
+		return;
+
+	err = call_set_sess_hdrs(call, call->staged_sess_hdrs);
+	if (err)
+		warning("call: apply staged session headers failed (%m)\n", err);
+	else
+		debug("call: applied staged session headers\n");
+
+	call->staged_sess_hdrs[0] = '\0';
+}
+
+
+struct call_answer_prep_eh {
+	struct le le;
+	call_answer_prep_h *h;
+};
+
+struct call_offer_post_eh {
+	struct le le;
+	call_offer_post_h *h;
+};
+
+struct call_refresh_answer_eh {
+	struct le le;
+	call_refresh_answer_h *h;
+};
+
+static struct list call_answer_prep_ehel;
+static struct list call_offer_post_ehel;
+static struct list call_refresh_answer_ehel;
+
+
+static void call_answer_prep_eh_destructor(void *arg)
+{
+	struct call_answer_prep_eh *eh = arg;
+
+	list_unlink(&eh->le);
+}
+
+
+static void call_answer_prep_notify(struct call *call)
+{
+	struct le *le;
+
+	if (!call)
+		return;
+
+	LIST_FOREACH(&call_answer_prep_ehel, le) {
+		struct call_answer_prep_eh *eh = le->data;
+
+		eh->h(call);
+	}
+}
+
+
+static void call_offer_post_eh_destructor(void *arg)
+{
+	struct call_offer_post_eh *eh = arg;
+
+	list_unlink(&eh->le);
+}
+
+
+static void call_offer_post_notify(struct call *call,
+				   const struct sip_msg *msg)
+{
+	struct le *le;
+
+	if (!call || !msg)
+		return;
+
+	LIST_FOREACH(&call_offer_post_ehel, le) {
+		struct call_offer_post_eh *eh = le->data;
+
+		eh->h(call, msg);
+	}
+}
+
+
+static void call_refresh_answer_eh_destructor(void *arg)
+{
+	struct call_refresh_answer_eh *eh = arg;
+
+	list_unlink(&eh->le);
+}
+
+
+static void call_refresh_answer_notify(struct call *call,
+				       const struct sip_msg *msg)
+{
+	struct le *le;
+
+	if (!call || !msg)
+		return;
+
+	LIST_FOREACH(&call_refresh_answer_ehel, le) {
+		struct call_refresh_answer_eh *eh = le->data;
+
+		eh->h(call, msg);
+	}
+}
+
+
+void call_offer_post_register(call_offer_post_h *h)
+{
+	struct call_offer_post_eh *eh;
+
+	if (!h)
+		return;
+
+	eh = mem_zalloc(sizeof(*eh), call_offer_post_eh_destructor);
+	if (!eh)
+		return;
+
+	eh->h = h;
+	list_append(&call_offer_post_ehel, &eh->le, eh);
+}
+
+
+void call_offer_post_unregister(call_offer_post_h *h)
+{
+	struct le *le;
+
+	if (!h)
+		return;
+
+	for (le = list_head(&call_offer_post_ehel); le; le = le->next) {
+		struct call_offer_post_eh *eh = le->data;
+
+		if (eh->h == h) {
+			mem_deref(eh);
+			break;
+		}
+	}
+}
+
+
+void call_refresh_answer_register(call_refresh_answer_h *h)
+{
+	struct call_refresh_answer_eh *eh;
+
+	if (!h)
+		return;
+
+	eh = mem_zalloc(sizeof(*eh), call_refresh_answer_eh_destructor);
+	if (!eh)
+		return;
+
+	eh->h = h;
+	list_append(&call_refresh_answer_ehel, &eh->le, eh);
+}
+
+
+void call_refresh_answer_unregister(call_refresh_answer_h *h)
+{
+	struct le *le;
+
+	if (!h)
+		return;
+
+	for (le = list_head(&call_refresh_answer_ehel); le; le = le->next) {
+		struct call_refresh_answer_eh *eh = le->data;
+
+		if (eh->h == h) {
+			mem_deref(eh);
+			break;
+		}
+	}
+}
+
+
+void call_answer_prep_register(call_answer_prep_h *h)
+{
+	struct call_answer_prep_eh *eh;
+
+	if (!h)
+		return;
+
+	eh = mem_zalloc(sizeof(*eh), call_answer_prep_eh_destructor);
+	if (!eh)
+		return;
+
+	eh->h = h;
+	list_append(&call_answer_prep_ehel, &eh->le, eh);
+}
+
+
+void call_answer_prep_unregister(call_answer_prep_h *h)
+{
+	struct le *le;
+
+	if (!h)
+		return;
+
+	for (le = list_head(&call_answer_prep_ehel); le; le = le->next) {
+		struct call_answer_prep_eh *eh = le->data;
+
+		if (eh->h == h) {
+			mem_deref(eh);
+			break;
+		}
+	}
+}
+
+
 /**
  * Get the list of custom SIP headers
  *
@@ -1719,11 +2004,29 @@ int call_answer(struct call *call, uint16_t scode, enum vidmode vmode)
 	if (err)
 		return err;
 
+	call_answer_prep_notify(call);
+
 	if (scode >= 200 && scode < 300) {
-		err = sipsess_answer(call->sess, scode, "Answering", desc,
-				"Allow: %H\r\n"
-				"%H", ua_print_allowed, call->ua,
-				ua_print_supported, call->ua);
+		struct mbuf *extra_hdrs = sipsess_hdrs_detach(call->sess);
+
+		if (extra_hdrs && mbuf_get_left(extra_hdrs)) {
+			err = sipsess_answer(call->sess, scode, "Answering",
+					     desc,
+					     "Allow: %H\r\n"
+					     "%H"
+					     "%H", ua_print_allowed, call->ua,
+					     ua_print_supported, call->ua,
+					     sipsess_mbuf_print, extra_hdrs);
+			mem_deref(extra_hdrs);
+		}
+		else {
+			mem_deref(extra_hdrs);
+			err = sipsess_answer(call->sess, scode, "Answering",
+					     desc,
+					     "Allow: %H\r\n"
+					     "%H", ua_print_allowed, call->ua,
+					     ua_print_supported, call->ua);
+		}
 	}
 	else {
 		err = sipsess_answer(call->sess, scode, "Answering", desc,
@@ -2164,6 +2467,19 @@ static int sipsess_offer_handler(struct mbuf **descp,
 
 	MAGIC_CHECK(call);
 
+	/* In-dialog target refresh: let modules attach session headers before
+	 * the 200 OK is sent (bodyless UPDATE or SDP re-INVITE). */
+	if (call_state(call) == CALL_STATE_ESTABLISHED &&
+	    (!pl_strcmp(&msg->met, "UPDATE") ||
+	     (!pl_strcmp(&msg->met, "INVITE") && pl_isset(&msg->to.tag)))) {
+		debug("call: target refresh %r (sdp=%zu)\n", &msg->met,
+		      mbuf_get_left(msg->mb));
+		call_offer_post_notify(call, msg);
+		call_apply_staged_sess_hdrs(call);
+		if (!got_offer)
+			return 0;
+	}
+
 	if (got_offer) {
 		struct mbuf *sdp_prev = NULL;
 		const struct sdp_media *m =
@@ -2297,6 +2613,12 @@ static int sipsess_answer_handler(const struct sip_msg *msg, void *arg)
 	if (err)
 		return err;
 
+	if (call_state(call) == CALL_STATE_ESTABLISHED &&
+	    msg->scode >= 200 && msg->scode < 300 &&
+	    (!pl_strcmp(&msg->cseq.met, "INVITE") ||
+	     !pl_strcmp(&msg->cseq.met, "UPDATE")))
+		call_refresh_answer_notify(call, msg);
+
 	return 0;
 }
 
@@ -2327,6 +2649,7 @@ static void sipsess_estab_handler(const struct sip_msg *msg, void *arg)
 	struct call *call = arg;
 	const uint64_t now = tmr_jiffies();
 	uint32_t wait;
+
 	(void)msg;
 
 	MAGIC_CHECK(call);
@@ -2817,6 +3140,30 @@ bool call_sess_cmp(const struct call *call, const struct sip_msg *msg)
 		return false;
 
 	return sipsess_msg(call->sess) == msg;
+}
+
+
+bool call_dialog_cmp(const struct call *call, const struct pl *callid)
+{
+	struct sip_dialog *dlg;
+
+	if (!call || !callid || !call->sess)
+		return false;
+
+	dlg = sipsess_dialog(call->sess);
+	if (!dlg)
+		return false;
+
+	return 0 == pl_strcmp(callid, sip_dialog_callid(dlg));
+}
+
+
+const struct sip_msg *call_msg(const struct call *call)
+{
+	if (!call || !call->sess)
+		return NULL;
+
+	return sipsess_msg(call->sess);
 }
 
 

@@ -238,6 +238,8 @@ bool call_early_video_available(const struct call *call);
 bool call_refresh_allowed(const struct call *call);
 bool call_ack_pending(const struct call *call);
 bool call_sess_cmp(const struct call *call, const struct sip_msg *msg);
+bool call_dialog_cmp(const struct call *call, const struct pl *callid);
+const struct sip_msg *call_msg(const struct call *call);
 int  call_transfer(struct call *call, const char *uri);
 int  call_replace_transfer(struct call *call, struct call *source_call);
 int  call_status(struct re_printf *pf, const struct call *call);
@@ -246,6 +248,17 @@ int  call_notify_sipfrag(struct call *call, uint16_t scode,
 			 const char *reason, ...);
 void call_set_handlers(struct call *call, call_event_h *eh,
 		       call_dtmf_h *dtmfh, void *arg);
+typedef void (call_answer_prep_h)(struct call *call);
+void call_answer_prep_register(call_answer_prep_h *h);
+void call_answer_prep_unregister(call_answer_prep_h *h);
+typedef void (call_offer_post_h)(struct call *call,
+				 const struct sip_msg *msg);
+void call_offer_post_register(call_offer_post_h *h);
+void call_offer_post_unregister(call_offer_post_h *h);
+typedef void (call_refresh_answer_h)(struct call *call,
+				       const struct sip_msg *msg);
+void call_refresh_answer_register(call_refresh_answer_h *h);
+void call_refresh_answer_unregister(call_refresh_answer_h *h);
 struct account *call_account(const struct call *call);
 uint16_t      call_scode(const struct call *call);
 enum call_state call_state(const struct call *call);
@@ -271,6 +284,13 @@ void          call_set_answer_delay(struct call *call, int32_t adelay);
 struct call  *call_find_linenum(const struct list *calls, uint32_t linenum);
 struct call  *call_find_id(const struct list *calls, const char *id);
 void call_set_current(struct list *calls, struct call *call);
+void call_set_custom_hdrs(struct call *call, const struct list *hdrs);
+int  call_custom_hdr_add(struct call *call, const char *name,
+			 const char *fmt, ...);
+void call_custom_hdr_remove(struct call *call, const char *name);
+int  call_set_sess_hdrs(struct call *call, const char *hdrs);
+void call_stage_sess_hdrs(struct call *call, const char *hdrs);
+void call_apply_staged_sess_hdrs(struct call *call);
 const struct list *call_get_custom_hdrs(const struct call *call);
 bool          call_is_peerterm(const struct call *call);
 void call_set_media_direction(struct call *call, enum sdp_dir a,
