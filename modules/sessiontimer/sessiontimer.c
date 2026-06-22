@@ -10,7 +10,7 @@
 /**
  * Session Timer module implementing RFC 4028
  *
- * Uses UA events, sipsess_sock_set_hooks(), and sip_resp_handler.
+ * Uses UA events, sipsess_sock_set_hooks(), and sip_resp_handler (422).
  * Session-Expires on outgoing INVITE uses call custom headers; in-dialog
  * messages use sipsess_set_hdrs().
  */
@@ -105,30 +105,12 @@ static uint32_t uas_answer_interval(uint32_t invite_interval,
 }
 
 
-static void timer_ext_enable(struct ua *ua)
-{
-	if (!ua)
-		return;
-
-	ua_add_extension(ua, "timer");
-}
-
-
-static void timer_ext_disable(struct ua *ua)
-{
-	if (!ua)
-		return;
-
-	ua_remove_extension(ua, "timer");
-}
-
-
 static void timer_ext_enable_all(void)
 {
 	struct le *le;
 
 	for (le = list_head(uag_list()); le; le = le->next)
-		timer_ext_enable(le->data);
+		ua_add_extension(le->data, "timer");
 }
 
 
@@ -137,7 +119,7 @@ static void timer_ext_disable_all(void)
 	struct le *le;
 
 	for (le = list_head(uag_list()); le; le = le->next)
-		timer_ext_disable(le->data);
+		ua_remove_extension(le->data, "timer");
 }
 
 
@@ -163,11 +145,14 @@ static size_t format_session_headers(char *hdrs, size_t sz,
 				     uint32_t session_interval,
 				     uint32_t min_se, enum st_refresher refresher,
 				     bool require_timer);
-static void add_session_headers(struct call *call, uint32_t session_interval,
-				uint32_t min_se, enum st_refresher refresher,
-				bool require_timer);
-static void process_incoming_request(struct sessiontimer *st,
-				     const struct sip_msg *msg);
+static void invite_headers(struct call *call, uint32_t session_interval,
+			   uint32_t min_se, enum st_refresher refresher,
+			   bool require_timer);
+static void sess_headers(struct call *call, uint32_t session_interval,
+			 uint32_t min_se, enum st_refresher refresher,
+			 bool require_timer);
+static void uas_negotiate(struct sessiontimer *st, const struct sip_msg *msg,
+			  bool peer_refresh);
 static void prepare_answer_headers(struct sessiontimer *st);
 static struct sessiontimer *alloc_timer(struct call *call);
 
@@ -260,42 +245,6 @@ static int parse_min_se_str(const char *s, uint32_t *min_se)
 
 	*min_se = mse;
 	return 0;
-}
-
-
-static int parse_session_expires(const struct pl *hdr_val,
-				 uint32_t *delta_seconds,
-				 enum st_refresher *refresher)
-{
-	char buf[128];
-
-	if (!hdr_val || !hdr_val->p || !hdr_val->l)
-		return EINVAL;
-
-	if (hdr_val->l >= sizeof(buf))
-		return EOVERFLOW;
-
-	memcpy(buf, hdr_val->p, hdr_val->l);
-	buf[hdr_val->l] = '\0';
-
-	return parse_session_expires_str(buf, delta_seconds, refresher);
-}
-
-
-static int parse_min_se(const struct pl *hdr_val, uint32_t *min_se)
-{
-	char buf[64];
-
-	if (!hdr_val || !hdr_val->p || !hdr_val->l)
-		return EINVAL;
-
-	if (hdr_val->l >= sizeof(buf))
-		return EOVERFLOW;
-
-	memcpy(buf, hdr_val->p, hdr_val->l);
-	buf[hdr_val->l] = '\0';
-
-	return parse_min_se_str(buf, min_se);
 }
 
 
@@ -444,15 +393,6 @@ static void defer_work_handler(void *arg)
 }
 
 
-static void schedule_defer_work(struct sessiontimer *st)
-{
-	if (!st)
-		return;
-
-	tmr_start(&st->defer_tmr, 1, defer_work_handler, st);
-}
-
-
 static void schedule_timer_restart(struct sessiontimer *st,
 				   uint32_t interval,
 				   enum st_refresher refresher)
@@ -463,7 +403,7 @@ static void schedule_timer_restart(struct sessiontimer *st,
 	st->pending_interval = interval;
 	st->pending_refresher = refresher;
 	st->pending_restart = true;
-	schedule_defer_work(st);
+	tmr_start(&st->defer_tmr, 1, defer_work_handler, st);
 }
 
 
@@ -607,14 +547,13 @@ static void negotiate_from_msg(struct sessiontimer *st,
 }
 
 
-static void handle_peer_refresh_request(struct sessiontimer *st,
-					const struct sip_msg *msg)
+static void uas_negotiate(struct sessiontimer *st, const struct sip_msg *msg,
+			  bool peer_refresh)
 {
 	uint32_t invite_interval = 0;
 	uint32_t invite_min_se = 0;
 	uint32_t session_interval;
 	enum st_refresher refresher = ST_REF_NONE;
-	enum st_refresher reply_ref;
 	char hdrs[384];
 	size_t n;
 
@@ -624,14 +563,15 @@ static void handle_peer_refresh_request(struct sessiontimer *st,
 	parse_msg_session_params(msg, &invite_interval, &invite_min_se,
 				 &refresher);
 
-	if (!invite_interval) {
-		debug("sessiontimer: peer %r without Session-Expires, skip\n",
-		      &msg->met);
-		return;
-	}
-
 	if (invite_min_se > st->min_se)
 		st->min_se = invite_min_se;
+
+	if (!invite_interval) {
+		if (peer_refresh)
+			debug("sessiontimer: peer %r without Session-Expires, "
+			      "skip\n", &msg->met);
+		return;
+	}
 
 	session_interval = uas_answer_interval(invite_interval, invite_min_se);
 	if (!session_interval)
@@ -640,19 +580,26 @@ static void handle_peer_refresh_request(struct sessiontimer *st,
 	if (refresher == ST_REF_NONE)
 		refresher = default_refresher_msg(st->call, true);
 
-	reply_ref = refresher;
-	n = format_session_headers(hdrs, sizeof(hdrs), session_interval,
-				   st->min_se, reply_ref, false);
-	if (!n) {
-		warning("sessiontimer: format peer refresh headers failed\n");
-		return;
+	if (peer_refresh) {
+		n = format_session_headers(hdrs, sizeof(hdrs), session_interval,
+					   st->min_se, refresher, false);
+		if (!n) {
+			warning("sessiontimer: format peer refresh headers "
+				"failed\n");
+			return;
+		}
+
+		debug("sessiontimer: peer %r interval=%u refresher=%s\n",
+		      &msg->met, session_interval, refresher_param(refresher));
+
+		sipsess_set_hdrs(call_sipsess(st->call), "%b", hdrs, n);
+		schedule_timer_restart(st, session_interval, refresher);
 	}
-
-	debug("sessiontimer: peer %r interval=%u refresher=%s\n",
-	      &msg->met, session_interval, refresher_param(refresher));
-
-	sipsess_set_hdrs(call_sipsess(st->call), "%b", hdrs, n);
-	schedule_timer_restart(st, session_interval, refresher);
+	else {
+		sess_headers(st->call, session_interval, st->min_se, refresher,
+			     refresher == ST_REF_UAC);
+		update_session_timer(st, session_interval, refresher);
+	}
 }
 
 
@@ -706,7 +653,7 @@ static void target_refresh_handler(struct sipsess *sess,
 		return;
 	}
 
-	handle_peer_refresh_request(st, msg);
+	uas_negotiate(st, msg, true);
 }
 
 
@@ -762,28 +709,15 @@ static size_t format_session_headers(char *hdrs, size_t sz,
 }
 
 
-static void add_session_headers(struct call *call, uint32_t session_interval,
-				uint32_t min_se, enum st_refresher refresher,
-				bool require_timer)
+static void invite_headers(struct call *call, uint32_t session_interval,
+			   uint32_t min_se, enum st_refresher refresher,
+			   bool require_timer)
 {
-	char hdrs[384];
-	size_t n;
 	int err;
 
 	if (!call)
 		return;
 
-	n = format_session_headers(hdrs, sizeof(hdrs), session_interval, min_se,
-				   refresher, require_timer);
-	if (!n)
-		return;
-
-	if (!call_set_sess_hdrs(call, hdrs)) {
-		debug("sessiontimer: set in-dialog headers via sess\n");
-		return;
-	}
-
-	debug("sessiontimer: set in-dialog headers via custom_hdr\n");
 	call_custom_hdr_remove(call, "Session-Expires");
 	call_custom_hdr_remove(call, "Min-SE");
 	call_custom_hdr_remove(call, "Require");
@@ -807,6 +741,31 @@ static void add_session_headers(struct call *call, uint32_t session_interval,
 		if (err)
 			warning("sessiontimer: Require: %m\n", err);
 	}
+}
+
+
+static void sess_headers(struct call *call, uint32_t session_interval,
+			 uint32_t min_se, enum st_refresher refresher,
+			 bool require_timer)
+{
+	char hdrs[384];
+	size_t n;
+	struct sipsess *sess;
+
+	if (!call)
+		return;
+
+	sess = call_sipsess(call);
+	if (!sess)
+		return;
+
+	n = format_session_headers(hdrs, sizeof(hdrs), session_interval, min_se,
+				   refresher, require_timer);
+	if (!n)
+		return;
+
+	if (sipsess_set_hdrs(sess, "%b", hdrs, n))
+		warning("sessiontimer: set session headers failed\n");
 }
 
 
@@ -902,8 +861,8 @@ static void handle_422_response(struct sessiontimer *st,
 		st->session_interval = st->min_se;
 
 	debug("sessiontimer: retry with interval=%u\n", st->session_interval);
-	add_session_headers(st->call, st->session_interval, st->min_se,
-			    local_refresher(st), false);
+	sess_headers(st->call, st->session_interval, st->min_se,
+		     local_refresher(st), false);
 
 	if (call_is_outgoing(st->call) &&
 	    call_state(st->call) == CALL_STATE_ESTABLISHED)
@@ -952,7 +911,6 @@ static void activate_on_established(struct sessiontimer *st)
 
 static void prepare_answer_headers(struct sessiontimer *st)
 {
-	enum st_refresher reply_ref;
 	const struct sip_msg *msg;
 
 	if (!st || !st->call)
@@ -962,55 +920,7 @@ static void prepare_answer_headers(struct sessiontimer *st)
 
 	msg = call_msg(st->call);
 	if (msg)
-		process_incoming_request(st, msg);
-
-	if (!st->session_interval)
-		return;
-
-	reply_ref = st->refresher;
-	if (reply_ref == ST_REF_NONE)
-		reply_ref = ST_REF_UAS;
-
-	debug("sessiontimer: answer headers interval=%u refresher=%s\n",
-	      st->session_interval, refresher_param(reply_ref));
-
-	add_session_headers(st->call, st->session_interval, st->min_se,
-			    reply_ref, reply_ref == ST_REF_UAC);
-}
-
-
-static void process_incoming_request(struct sessiontimer *st,
-				     const struct sip_msg *msg)
-{
-	uint32_t invite_interval = 0;
-	uint32_t invite_min_se = 0;
-	uint32_t session_interval;
-	enum st_refresher refresher = ST_REF_NONE;
-	enum st_refresher reply_ref;
-
-	if (!st || !msg)
-		return;
-
-	parse_msg_session_params(msg, &invite_interval, &invite_min_se,
-				 &refresher);
-
-	if (invite_min_se > st->min_se)
-		st->min_se = invite_min_se;
-
-	if (!invite_interval)
-		return;
-
-	session_interval = uas_answer_interval(invite_interval, invite_min_se);
-	if (!session_interval)
-		return;
-
-	if (refresher == ST_REF_NONE)
-		refresher = default_refresher_msg(st->call, true);
-
-	reply_ref = refresher;
-	add_session_headers(st->call, session_interval, st->min_se, reply_ref,
-			    reply_ref == ST_REF_UAC);
-	update_session_timer(st, session_interval, refresher);
+		uas_negotiate(st, msg, false);
 }
 
 
@@ -1032,14 +942,6 @@ static void tmr_handler(void *arg)
 	if (!st->is_refresher) {
 		uint32_t remain;
 
-		if (tmr_jiffies() >= st->session_expires) {
-			warning("sessiontimer: no refresh received, session "
-				"expired\n");
-			call_hangup(st->call, 408, "Session Timer Expired");
-			mem_deref(st);
-			return;
-		}
-
 		remain = (uint32_t)(st->session_expires - tmr_jiffies());
 		if (remain > 5000)
 			remain = 5000;
@@ -1056,8 +958,8 @@ static void tmr_handler(void *arg)
 
 	info("sessiontimer: sending refresh (interval=%u)\n",
 	     st->session_interval);
-	add_session_headers(st->call, st->session_interval, st->min_se,
-			    local_refresher(st), false);
+	sess_headers(st->call, st->session_interval, st->min_se,
+		     local_refresher(st), false);
 	err = call_modify(st->call);
 	if (err) {
 		warning("sessiontimer: refresh failed: %m\n", err);
@@ -1076,7 +978,7 @@ static bool sip_resp_handler(const struct sip_msg *msg, void *arg)
 	struct sessiontimer *st;
 	(void)arg;
 
-	if (!msg || msg->req)
+	if (!msg || msg->req || msg->scode != 422)
 		return false;
 
 	if (pl_strcmp(&msg->cseq.met, "INVITE") &&
@@ -1091,15 +993,7 @@ static bool sip_resp_handler(const struct sip_msg *msg, void *arg)
 	if (!st)
 		return false;
 
-	if (msg->scode == 422) {
-		handle_422_response(st, msg);
-		return false;
-	}
-
-	if (msg->scode >= 200 && msg->scode < 300 &&
-	    call_state(call) == CALL_STATE_ESTABLISHED)
-		handle_refresh_2xx_response(st, msg);
-
+	handle_422_response(st, msg);
 	return false;
 }
 
@@ -1117,7 +1011,7 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 		if (!module_enabled)
 			break;
 
-		timer_ext_enable(bevent_get_ua(event));
+		ua_add_extension(bevent_get_ua(event), "timer");
 		break;
 
 	case UA_EVENT_CALL_OUTGOING:
@@ -1138,8 +1032,8 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 		st->is_refresher = true;
 		debug("sessiontimer: propose interval=%u on INVITE\n",
 		      st->session_interval);
-		add_session_headers(call, st->session_interval, st->min_se,
-				    ST_REF_UAC, false);
+		invite_headers(call, st->session_interval, st->min_se,
+			       ST_REF_UAC, false);
 		break;
 
 	case UA_EVENT_CALL_INCOMING:
