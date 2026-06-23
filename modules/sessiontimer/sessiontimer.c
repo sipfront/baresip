@@ -144,7 +144,7 @@ static void start_session_timer(struct sessiontimer *st);
 static size_t format_session_headers(char *hdrs, size_t sz,
 				     uint32_t session_interval,
 				     uint32_t min_se, enum st_refresher refresher,
-				     bool require_timer);
+				     bool require_timer, bool include_supported);
 static void invite_headers(struct call *call, uint32_t session_interval,
 			   uint32_t min_se, enum st_refresher refresher,
 			   bool require_timer);
@@ -582,7 +582,7 @@ static void uas_negotiate(struct sessiontimer *st, const struct sip_msg *msg,
 
 	if (peer_refresh) {
 		n = format_session_headers(hdrs, sizeof(hdrs), session_interval,
-					   st->min_se, refresher, false);
+					   st->min_se, refresher, false, false);
 		if (!n) {
 			warning("sessiontimer: format peer refresh headers "
 				"failed\n");
@@ -682,12 +682,17 @@ static void refresh_2xx_handler(struct sipsess *sess,
 static size_t format_session_headers(char *hdrs, size_t sz,
 				     uint32_t session_interval,
 				     uint32_t min_se, enum st_refresher refresher,
-				     bool require_timer)
+				     bool require_timer, bool include_supported)
 {
 	size_t n = 0;
 
 	if (!hdrs || !sz)
 		return 0;
+
+	if (include_supported) {
+		n += re_snprintf(hdrs + n, sz - n,
+				 "Supported: timer\r\n");
+	}
 
 	if (session_interval > 0) {
 		n += re_snprintf(hdrs + n, sz - n,
@@ -760,7 +765,8 @@ static void sess_headers(struct call *call, uint32_t session_interval,
 		return;
 
 	n = format_session_headers(hdrs, sizeof(hdrs), session_interval, min_se,
-				   refresher, require_timer);
+				   refresher, require_timer,
+				   call_is_outgoing(call));
 	if (!n)
 		return;
 
