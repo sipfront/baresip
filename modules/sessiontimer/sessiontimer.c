@@ -12,7 +12,10 @@
  *
  * Uses UA events, sipsess_sock_set_hooks(), and sip_resp_handler (422).
  * Session-Expires on outgoing INVITE uses call custom headers; in-dialog
- * messages use sipsess_set_hdrs().
+ * messages use sipsess_set_hdrs().  On incoming INVITE with Supported:
+ * timer but no Session-Expires, the UAS offers timers per RFC 4028 §8.4.
+ * Refresher selection: sessiontimer_refresher = auto|uac|uas (default auto:
+ * whoever first offers Session-Expires refreshes).
  */
 
 #define MIN_SESSION_INTERVAL 90
@@ -23,6 +26,12 @@ enum st_refresher {
 	ST_REF_NONE = 0,
 	ST_REF_UAC,
 	ST_REF_UAS,
+};
+
+enum st_refresher_pref {
+	ST_REF_PREF_AUTO = 0,  /* choose offerer */
+	ST_REF_PREF_UAC,
+	ST_REF_PREF_UAS,
 };
 
 struct sessiontimer {
@@ -48,12 +57,14 @@ static struct sip_lsnr *lsnr_resp;
 static uint32_t default_min_se = MIN_SESSION_INTERVAL;
 static uint32_t default_session_interval = DEFAULT_SESSION_INTERVAL;
 static bool module_enabled = true;
+static enum st_refresher_pref refresher_pref = ST_REF_PREF_AUTO;
 
 
 static void reload_sessiontimer_config(void)
 {
 	uint32_t interval = DEFAULT_SESSION_INTERVAL;
 	uint32_t min_se = MIN_SESSION_INTERVAL;
+	char refbuf[32];
 	int err;
 
 	err = conf_get_u32(conf_cur(), "sessiontimer_interval", &interval);
@@ -76,6 +87,17 @@ static void reload_sessiontimer_config(void)
 
 	default_session_interval = interval;
 	default_min_se = min_se;
+
+	refresher_pref = ST_REF_PREF_AUTO;
+	if (!conf_get_str(conf_cur(), "sessiontimer_refresher",
+			  refbuf, sizeof(refbuf))) {
+		if (!str_casecmp(refbuf, "uac"))
+			refresher_pref = ST_REF_PREF_UAC;
+		else if (!str_casecmp(refbuf, "uas"))
+			refresher_pref = ST_REF_PREF_UAS;
+		else
+			refresher_pref = ST_REF_PREF_AUTO;
+	}
 }
 
 
@@ -245,6 +267,40 @@ static int parse_min_se_str(const char *s, uint32_t *min_se)
 
 	*min_se = mse;
 	return 0;
+}
+
+
+static bool msg_supports_timer(const struct sip_msg *msg)
+{
+	return msg && sip_msg_hdr_has_value(msg, SIP_HDR_SUPPORTED, "timer");
+}
+
+
+static enum st_refresher offerer_refresher(const struct call *call)
+{
+	return call_is_outgoing(call) ? ST_REF_UAC : ST_REF_UAS;
+}
+
+
+static enum st_refresher select_refresher(const struct call *call,
+					 const struct sip_msg *msg,
+					 bool local_offer,
+					 enum st_refresher parsed_ref)
+{
+	if (parsed_ref != ST_REF_NONE)
+		return parsed_ref;
+
+	if (msg && !msg_supports_timer(msg))
+		return ST_REF_UAS;
+
+	switch (refresher_pref) {
+	case ST_REF_PREF_UAC:  return ST_REF_UAC;
+	case ST_REF_PREF_UAS:  return ST_REF_UAS;
+	default:
+		if (local_offer)
+			return offerer_refresher(call);
+		return call_is_outgoing(call) ? ST_REF_UAS : ST_REF_UAC;
+	}
 }
 
 
@@ -554,6 +610,7 @@ static void uas_negotiate(struct sessiontimer *st, const struct sip_msg *msg,
 	uint32_t invite_min_se = 0;
 	uint32_t session_interval;
 	enum st_refresher refresher = ST_REF_NONE;
+	bool local_offer = false;
 	char hdrs[384];
 	size_t n;
 
@@ -567,18 +624,28 @@ static void uas_negotiate(struct sessiontimer *st, const struct sip_msg *msg,
 		st->min_se = invite_min_se;
 
 	if (!invite_interval) {
-		if (peer_refresh)
+		if (peer_refresh) {
 			debug("sessiontimer: peer %r without Session-Expires, "
 			      "skip\n", &msg->met);
-		return;
+			return;
+		}
+
+		if (!msg_supports_timer(msg))
+			return;
+
+		/* RFC 4028 §8.4: caller supports timers but did not
+		 * request an interval — UAS may offer one in the 2xx. */
+		invite_interval = default_session_interval;
+		local_offer = true;
+		debug("sessiontimer: offering interval=%u (Supported: timer, "
+		      "no Session-Expires)\n", invite_interval);
 	}
 
 	session_interval = uas_answer_interval(invite_interval, invite_min_se);
 	if (!session_interval)
 		return;
 
-	if (refresher == ST_REF_NONE)
-		refresher = default_refresher_msg(st->call, true);
+	refresher = select_refresher(st->call, msg, local_offer, refresher);
 
 	if (peer_refresh) {
 		n = format_session_headers(hdrs, sizeof(hdrs), session_interval,
@@ -1034,12 +1101,13 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 			break;
 
 		st->session_interval = default_session_interval;
-		st->refresher = ST_REF_UAC;
-		st->is_refresher = true;
-		debug("sessiontimer: propose interval=%u on INVITE\n",
-		      st->session_interval);
+		st->refresher = select_refresher(call, NULL, true, ST_REF_NONE);
+		st->is_refresher = refresher_is_local(st);
+		debug("sessiontimer: propose interval=%u refresher=%s on "
+		      "INVITE\n", st->session_interval,
+		      refresher_param(st->refresher));
 		invite_headers(call, st->session_interval, st->min_se,
-			       ST_REF_UAC, false);
+			       st->refresher, false);
 		break;
 
 	case UA_EVENT_CALL_INCOMING:
