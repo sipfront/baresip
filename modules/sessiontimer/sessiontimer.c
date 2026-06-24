@@ -762,9 +762,17 @@ static size_t format_session_headers(char *hdrs, size_t sz,
 	}
 
 	if (session_interval > 0) {
-		n += re_snprintf(hdrs + n, sz - n,
-				 "Session-Expires: %u;refresher=%s\r\n",
-				 session_interval, refresher_param(refresher));
+		if (refresher != ST_REF_NONE) {
+			n += re_snprintf(hdrs + n, sz - n,
+					 "Session-Expires: %u;refresher=%s\r\n",
+					 session_interval,
+					 refresher_param(refresher));
+		}
+		else {
+			n += re_snprintf(hdrs + n, sz - n,
+					 "Session-Expires: %u\r\n",
+					 session_interval);
+		}
 	}
 
 	if (min_se > 0 && min_se >= MIN_SESSION_INTERVAL) {
@@ -795,9 +803,17 @@ static void invite_headers(struct call *call, uint32_t session_interval,
 	call_custom_hdr_remove(call, "Require");
 
 	if (session_interval > 0) {
-		err = call_custom_hdr_add(call, "Session-Expires",
-					  "%u;refresher=%s", session_interval,
-					  refresher_param(refresher));
+		if (refresher != ST_REF_NONE) {
+			err = call_custom_hdr_add(call, "Session-Expires",
+						  "%u;refresher=%s",
+						  session_interval,
+						  refresher_param(refresher));
+		}
+		else {
+			err = call_custom_hdr_add(call, "Session-Expires",
+						  "%u",
+						  session_interval);
+		}
 		if (err)
 			warning("sessiontimer: Session-Expires: %m\n", err);
 	}
@@ -1103,11 +1119,21 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 		st->session_interval = default_session_interval;
 		st->refresher = select_refresher(call, NULL, true, ST_REF_NONE);
 		st->is_refresher = refresher_is_local(st);
-		debug("sessiontimer: propose interval=%u refresher=%s on "
-		      "INVITE\n", st->session_interval,
-		      refresher_param(st->refresher));
-		invite_headers(call, st->session_interval, st->min_se,
-			       st->refresher, false);
+		if (refresher_pref == ST_REF_PREF_AUTO) {
+			/* Tester-friendly: let the callee pick refresher in
+			 * 2xx when we initiate the timer offer. */
+			debug("sessiontimer: propose interval=%u (no refresher) "
+			      "on INVITE\n", st->session_interval);
+			invite_headers(call, st->session_interval, st->min_se,
+				       ST_REF_NONE, false);
+		}
+		else {
+			debug("sessiontimer: propose interval=%u refresher=%s on "
+			      "INVITE\n", st->session_interval,
+			      refresher_param(st->refresher));
+			invite_headers(call, st->session_interval, st->min_se,
+				       st->refresher, false);
+		}
 		break;
 
 	case UA_EVENT_CALL_INCOMING:
