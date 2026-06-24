@@ -676,27 +676,48 @@ static struct call *call_from_sess(struct sipsess *sess)
 }
 
 
-static void hdr_prep_handler(struct sipsess *sess, void *arg)
+static int hdr_prep_handler(struct sipsess *sess, void *arg)
 {
 	struct call *call;
 	struct sessiontimer *st;
+	const struct sip_msg *msg;
+	uint32_t invite_interval = 0;
+	uint32_t invite_min_se = 0;
+	enum st_refresher ref = ST_REF_NONE;
 	(void)arg;
 
 	call = call_from_sess(sess);
 	if (!call || call_is_outgoing(call))
-		return;
+		return 0;
 
 	st = find_timer(call);
 	if (!st) {
 		st = alloc_timer(call);
 		if (!st)
-			return;
+			return 0;
 
 		st->refresher = ST_REF_UAS;
 		st->is_refresher = false;
 	}
 
+	/* Strict RFC 4028 UAS behavior:
+	 * If the INVITE proposes a Session-Expires below our local policy
+	 * minimum, reject with 422 and include Min-SE. */
+	msg = sipsess_msg(sess);
+	if (msg) {
+		parse_msg_session_params(msg, &invite_interval, &invite_min_se,
+					 &ref);
+
+		if (invite_interval && invite_interval < default_min_se) {
+			(void)sipsess_set_hdrs(sess, "Min-SE: %u\r\n",
+					       default_min_se);
+			mem_deref(st);
+			return 422;
+		}
+	}
+
 	prepare_answer_headers(st);
+	return 0;
 }
 
 

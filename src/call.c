@@ -110,6 +110,8 @@ struct call {
 
 
 static int send_invite(struct call *call);
+static void call_event_handler(struct call *call, enum call_event ev,
+			       const char *fmt, ...);
 static int send_dtmf_info(struct call *call, char key);
 static int codec_reinvite_internal(struct call *call, const char *spec,
 				   bool user_init);
@@ -190,6 +192,15 @@ static void call_stream_stop(struct call *call)
 	video_stop(call->video);
 
 	tmr_cancel(&call->tmr_inv);
+}
+
+
+static void deferred_answer_reject(void *arg)
+{
+	struct call *call = arg;
+
+	call_stream_stop(call);
+	call_event_handler(call, CALL_EVENT_CLOSED, "Rejected");
 }
 
 
@@ -369,13 +380,15 @@ static void call_destructor(void *arg)
 	if (call->state != CALL_STATE_IDLE)
 		print_summary(call);
 
-	if (call_is_peerterm(call)) {
-		info("call ended by peer\n");
-	    bevent_call_emit(UA_EVENT_CALL_ENDED_REMOTE, call, "");
-	}
-	else {
-		info("call ended by local\n");
-		bevent_call_emit(UA_EVENT_CALL_ENDED_LOCAL, call, "");
+	if (call->state != CALL_STATE_IDLE) {
+		if (call_is_peerterm(call)) {
+			info("call ended by peer\n");
+			bevent_call_emit(UA_EVENT_CALL_ENDED_REMOTE, call, "");
+		}
+		else {
+			info("call ended by local\n");
+			bevent_call_emit(UA_EVENT_CALL_ENDED_LOCAL, call, "");
+		}
 	}
 
 
@@ -1796,12 +1809,23 @@ int call_answer(struct call *call, uint16_t scode, enum vidmode vmode)
 				"Allow: %H\r\n", ua_print_allowed, call->ua);
 	}
 
+	mem_deref(desc);
+
+	if (err == EPROTO) {
+		set_state(call, CALL_STATE_TERMINATED);
+		call->sess = mem_deref(call->sess);
+		tmr_cancel(&call->tmr_answ);
+		tmr_start(&call->tmr_answ, 0, deferred_answer_reject, call);
+		return err;
+	}
+
+	if (err)
+		return err;
+
 	call->answered = true;
 	call->ans_queued = false;
 
-	mem_deref(desc);
-
-	return err;
+	return 0;
 }
 
 
@@ -2843,6 +2867,11 @@ int call_accept(struct call *call, struct sipsess_sock *sess_sock,
 			     call, "Allow: %H\r\n%H",
 			     ua_print_allowed, call->ua,
 			     ua_print_require, call->ua);
+
+	if (err == EPROTO) {
+		mem_deref(call);
+		return 0;
+	}
 
 	if (err) {
 		warning("call: sipsess_accept: %m\n", err);
