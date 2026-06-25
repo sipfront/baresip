@@ -10,7 +10,7 @@
 /**
  * Session Timer module implementing RFC 4028
  *
- * Uses UA events, sipsess_sock_set_hooks(), and sip_resp_handler (422).
+ * Uses UA events and sipsess_sock_set_hooks() (422 retry via resp422).
  * Session-Expires on outgoing INVITE uses call custom headers; in-dialog
  * messages use sipsess_set_hdrs().  On incoming INVITE with Supported:
  * timer but no Session-Expires, the UAS offers timers per RFC 4028 §8.4.
@@ -40,7 +40,10 @@ struct sessiontimer {
 	struct tmr tmr;
 	struct tmr defer_tmr;
 	uint32_t session_interval;
+	/* Local policy Min-SE (what we advertise in Min-SE header). */
 	uint32_t min_se;
+	/* Peer Min-SE learned from messages (e.g. 422 Min-SE). */
+	uint32_t peer_min_se;
 	uint64_t session_expires;
 	enum st_refresher refresher;
 	uint32_t pending_interval;
@@ -52,7 +55,6 @@ struct sessiontimer {
 };
 
 static struct list sessiontimers;
-static struct sip_lsnr *lsnr_resp;
 
 static uint32_t default_min_se = MIN_SESSION_INTERVAL;
 static uint32_t default_session_interval = DEFAULT_SESSION_INTERVAL;
@@ -322,42 +324,6 @@ static struct sessiontimer *find_timer(const struct call *call)
 }
 
 
-static bool match_call_dialog(const struct call *call,
-			      const struct sip_msg *msg)
-{
-	return call_dialog_cmp(call, &msg->callid);
-}
-
-
-struct call_match_ctx {
-	struct call *call;
-	const struct sip_msg *msg;
-};
-
-static void pick_call_handler(struct call *call, void *arg)
-{
-	struct call_match_ctx *ctx = arg;
-
-	if (ctx->call)
-		return;
-
-	if (match_call_dialog(call, ctx->msg))
-		ctx->call = call;
-}
-
-static struct call *find_call_by_msg(const struct sip_msg *msg)
-{
-	struct call_match_ctx ctx = {NULL, msg};
-
-	if (!msg)
-		return NULL;
-
-	uag_filter_calls(pick_call_handler, NULL, &ctx);
-
-	return ctx.call;
-}
-
-
 static bool refresher_is_local(const struct sessiontimer *st)
 {
 	if (!st)
@@ -480,10 +446,10 @@ static void handle_refresh_2xx_response(struct sessiontimer *st,
 	parse_msg_session_params(msg, &interval, &min_se, &refresher);
 
 	if (interval) {
-		if (min_se > st->min_se)
-			st->min_se = min_se;
-		if (st->min_se && interval < st->min_se)
-			interval = st->min_se;
+		if (min_se > st->peer_min_se)
+			st->peer_min_se = min_se;
+		if (st->peer_min_se && interval < st->peer_min_se)
+			interval = st->peer_min_se;
 		if (refresher == ST_REF_NONE)
 			refresher = default_refresher_msg(st->call, false);
 		restart_iv = interval;
@@ -580,11 +546,11 @@ static void negotiate_from_msg(struct sessiontimer *st,
 	if (!session_interval)
 		return;
 
-	if (min_se > st->min_se)
-		st->min_se = min_se;
+	if (min_se > st->peer_min_se)
+		st->peer_min_se = min_se;
 
-	if (st->min_se && session_interval < st->min_se)
-		session_interval = st->min_se;
+	if (st->peer_min_se && session_interval < st->peer_min_se)
+		session_interval = st->peer_min_se;
 
 	if (refresher == ST_REF_NONE)
 		refresher = default_refresher_msg(st->call, request);
@@ -620,8 +586,8 @@ static void uas_negotiate(struct sessiontimer *st, const struct sip_msg *msg,
 	parse_msg_session_params(msg, &invite_interval, &invite_min_se,
 				 &refresher);
 
-	if (invite_min_se > st->min_se)
-		st->min_se = invite_min_se;
+	if (invite_min_se > st->peer_min_se)
+		st->peer_min_se = invite_min_se;
 
 	if (!invite_interval) {
 		if (peer_refresh) {
@@ -649,7 +615,7 @@ static void uas_negotiate(struct sessiontimer *st, const struct sip_msg *msg,
 
 	if (peer_refresh) {
 		n = format_session_headers(hdrs, sizeof(hdrs), session_interval,
-					   st->min_se, refresher, false, false);
+					   0, refresher, false, false);
 		if (!n) {
 			warning("sessiontimer: format peer refresh headers "
 				"failed\n");
@@ -663,7 +629,8 @@ static void uas_negotiate(struct sessiontimer *st, const struct sip_msg *msg,
 		schedule_timer_restart(st, session_interval, refresher);
 	}
 	else {
-		sess_headers(st->call, session_interval, st->min_se, refresher,
+		/* RFC 4028: Min-SE MUST NOT be used in 2xx responses */
+		sess_headers(st->call, session_interval, 0, refresher,
 			     refresher == ST_REF_UAC);
 		update_session_timer(st, session_interval, refresher);
 	}
@@ -929,6 +896,7 @@ static struct sessiontimer *alloc_timer(struct call *call)
 
 	st->call = call;
 	st->min_se = default_min_se;
+	st->peer_min_se = 0;
 	tmr_init(&st->tmr);
 	tmr_init(&st->defer_tmr);
 	list_append(&sessiontimers, &st->le, st);
@@ -937,46 +905,87 @@ static struct sessiontimer *alloc_timer(struct call *call)
 }
 
 
-static void handle_422_response(struct sessiontimer *st,
-				const struct sip_msg *msg)
+static int handle_422_response(struct sessiontimer *st,
+			       const struct sip_msg *msg)
 {
 	char msebuf[64];
-	uint32_t min_se = 0;
+	uint32_t peer_min_se = 0;
 	int err;
 
 	if (!st || !msg)
-		return;
+		return ENOSYS;
 
 	err = hdr_text_copy(msg, "Min-SE", msebuf, sizeof(msebuf));
-	if (!err) {
-		err = parse_min_se_str(msebuf, &min_se);
-		if (!err && min_se > st->min_se) {
-			st->min_se = min_se;
-			debug("sessiontimer: 422 Min-SE=%u\n", min_se);
-		}
-	}
+	if (err)
+		return EINVAL;
 
-	if (!st->min_se)
-		return;
+	err = parse_min_se_str(msebuf, &peer_min_se);
+	if (err || !peer_min_se)
+		return EINVAL;
+
+	if (peer_min_se > st->peer_min_se) {
+		st->peer_min_se = peer_min_se;
+		debug("sessiontimer: 422 Min-SE=%u\n", peer_min_se);
+	}
 
 	st->retry_count++;
 	if (st->retry_count > 5) {
 		warning("sessiontimer: too many 422 retries, giving up\n");
 		call_hangup(st->call, 422, "Session Interval Too Small");
 		mem_deref(st);
-		return;
+		return EINVAL;
 	}
 
-	if (st->session_interval < st->min_se)
-		st->session_interval = st->min_se;
+	/* Raise Session-Expires to satisfy peer minimum. Keep advertising our
+	 * local Min-SE policy in Min-SE header on the retry. */
+	if (st->peer_min_se && st->session_interval < st->peer_min_se)
+		st->session_interval = st->peer_min_se;
 
 	debug("sessiontimer: retry with interval=%u\n", st->session_interval);
-	sess_headers(st->call, st->session_interval, st->min_se,
-		     local_refresher(st), false);
+
+	/* RFC 4028: before the dialog is established, the UAC retry should
+	 * include Min-SE set to the largest Min-SE observed in 422s for this
+	 * Call-ID. */
+	{
+		uint32_t advertised_min_se = st->min_se;
+		if (st->peer_min_se > advertised_min_se)
+			advertised_min_se = st->peer_min_se;
+
+		invite_headers(st->call, st->session_interval, advertised_min_se,
+		       local_refresher(st), false);
+	}
 
 	if (call_is_outgoing(st->call) &&
-	    call_state(st->call) == CALL_STATE_ESTABLISHED)
-		(void)call_modify(st->call);
+	    call_state(st->call) != CALL_STATE_ESTABLISHED) {
+		err = call_refresh_outgoing_hdrs(st->call);
+		if (err)
+			return err;
+	}
+	else {
+		sess_headers(st->call, st->session_interval, st->min_se,
+			     local_refresher(st), false);
+	}
+
+	return 0;
+}
+
+
+static int resp422_handler(struct sipsess *sess, const struct sip_msg *msg,
+			   void *arg)
+{
+	struct call *call;
+	struct sessiontimer *st;
+	(void)arg;
+
+	call = call_from_sess(sess);
+	if (!call)
+		return EINVAL;
+
+	st = find_timer(call);
+	if (!st)
+		return ENOTSUP;
+
+	return handle_422_response(st, msg);
 }
 
 
@@ -997,6 +1006,9 @@ static void activate_on_established(struct sessiontimer *st)
 		if (msg)
 			negotiate_from_msg(st, msg, false, false);
 	}
+
+	/* RFC 4028: learned Min-SE max from 422s is cleared once established */
+	st->peer_min_se = 0;
 
 	if (st->active) {
 		start_session_timer(st);
@@ -1079,32 +1091,6 @@ static void tmr_handler(void *arg)
 		st->retry_count = 0;
 		debug("sessiontimer: refresh sent, awaiting 2xx\n");
 	}
-}
-
-
-static bool sip_resp_handler(const struct sip_msg *msg, void *arg)
-{
-	struct call *call;
-	struct sessiontimer *st;
-	(void)arg;
-
-	if (!msg || msg->req || msg->scode != 422)
-		return false;
-
-	if (pl_strcmp(&msg->cseq.met, "INVITE") &&
-	    pl_strcmp(&msg->cseq.met, "UPDATE"))
-		return false;
-
-	call = find_call_by_msg(msg);
-	if (!call)
-		return false;
-
-	st = find_timer(call);
-	if (!st)
-		return false;
-
-	handle_422_response(st, msg);
-	return false;
 }
 
 
@@ -1214,17 +1200,13 @@ static int module_init(void)
 
 	timer_ext_enable_all();
 
-	err = sip_listen(&lsnr_resp, uag_sip(), false, sip_resp_handler, NULL);
-	if (err)
-		goto out;
-
 	err = bevent_register(event_handler, NULL);
 	if (err)
 		goto out;
 
 	sipsess_sock_set_hooks(uag_sipsess_sock(), hdr_prep_handler,
 			       target_refresh_handler, refresh_2xx_handler,
-			       NULL);
+			       resp422_handler, NULL);
 
 	info("sessiontimer: loaded (interval=%u, min=%u)\n",
 	     default_session_interval, default_min_se);
@@ -1233,7 +1215,6 @@ static int module_init(void)
 
  out:
 	timer_ext_disable_all();
-	lsnr_resp = mem_deref(lsnr_resp);
 	return err;
 }
 
@@ -1242,7 +1223,6 @@ static int module_close(void)
 {
 	debug("sessiontimer: module closing..\n");
 
-	lsnr_resp = mem_deref(lsnr_resp);
 	bevent_unregister(event_handler);
 	sipsess_sock_unset_hooks(uag_sipsess_sock());
 	timer_ext_disable_all();

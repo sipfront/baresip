@@ -280,6 +280,7 @@ int  call_custom_hdr_add(struct call *call, const char *name,
 			 const char *fmt, ...);
 void call_custom_hdr_remove(struct call *call, const char *name);
 int  call_set_sess_hdrs(struct call *call, const char *hdrs);
+int  call_refresh_outgoing_hdrs(struct call *call);
 const struct list *call_get_custom_hdrs(const struct call *call);
 bool          call_is_peerterm(const struct call *call);
 void call_set_media_direction(struct call *call, enum sdp_dir a,

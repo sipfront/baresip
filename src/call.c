@@ -110,6 +110,7 @@ struct call {
 
 
 static int send_invite(struct call *call);
+static int call_print_replaces(struct re_printf *pf, const struct call *call);
 static void call_event_handler(struct call *call, enum call_event ev,
 			       const char *fmt, ...);
 static int send_dtmf_info(struct call *call, char key);
@@ -1302,6 +1303,21 @@ int call_set_sess_hdrs(struct call *call, const char *hdrs)
 
 	len = str_len(hdrs);
 	return sipsess_set_hdrs(call->sess, "%b", hdrs, len);
+}
+
+
+int call_refresh_outgoing_hdrs(struct call *call)
+{
+	if (!call || !call->sess)
+		return EINVAL;
+
+	return sipsess_set_hdrs(call->sess,
+				"Allow: %H\r\n%H%H%H%H",
+				ua_print_allowed, call->ua,
+				ua_print_supported, call->ua,
+				ua_print_require, call->ua,
+				call_print_replaces, call,
+				custom_hdrs_print, &call->custom_hdrs);
 }
 
 
