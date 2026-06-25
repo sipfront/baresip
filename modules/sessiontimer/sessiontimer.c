@@ -15,7 +15,7 @@
  * messages use sipsess_set_hdrs().  On incoming INVITE with Supported:
  * timer but no Session-Expires, the UAS offers timers per RFC 4028 §8.4.
  * Refresher selection: sessiontimer_refresher = auto|uac|uas (default auto:
- * whoever first offers Session-Expires refreshes).
+ * UAC omits refresher on INVITE; UAS picks itself when none is offered).
  */
 
 #define MIN_SESSION_INTERVAL 90
@@ -29,7 +29,7 @@ enum st_refresher {
 };
 
 enum st_refresher_pref {
-	ST_REF_PREF_AUTO = 0,  /* choose offerer */
+	ST_REF_PREF_AUTO = 0,  /* UAS decides when request omits refresher */
 	ST_REF_PREF_UAC,
 	ST_REF_PREF_UAS,
 };
@@ -62,6 +62,27 @@ static bool module_enabled = true;
 static enum st_refresher_pref refresher_pref = ST_REF_PREF_AUTO;
 
 
+/* Session-Expires must be strictly greater than Min-SE. */
+static uint32_t clamp_session_interval(uint32_t interval, uint32_t min_se)
+{
+	if (!interval)
+		return 0;
+
+	if (interval < MIN_SESSION_INTERVAL)
+		interval = MIN_SESSION_INTERVAL;
+
+	if (min_se && interval <= min_se) {
+		debug("sessiontimer: raising interval %u above Min-SE %u\n",
+		      interval, min_se);
+		interval = min_se + 1;
+		if (interval < MIN_SESSION_INTERVAL)
+			interval = MIN_SESSION_INTERVAL;
+	}
+
+	return interval;
+}
+
+
 static void reload_sessiontimer_config(void)
 {
 	uint32_t interval = DEFAULT_SESSION_INTERVAL;
@@ -87,8 +108,8 @@ static void reload_sessiontimer_config(void)
 	else if (min_se < MIN_SESSION_INTERVAL)
 		min_se = MIN_SESSION_INTERVAL;
 
-	default_session_interval = interval;
 	default_min_se = min_se;
+	default_session_interval = clamp_session_interval(interval, min_se);
 
 	refresher_pref = ST_REF_PREF_AUTO;
 	if (!conf_get_str(conf_cur(), "sessiontimer_refresher",
@@ -125,7 +146,8 @@ static uint32_t uas_answer_interval(uint32_t invite_interval,
 	if (interval < MIN_SESSION_INTERVAL)
 		interval = MIN_SESSION_INTERVAL;
 
-	return interval;
+	return clamp_session_interval(interval,
+				      invite_min_se ? invite_min_se : default_min_se);
 }
 
 
@@ -301,7 +323,9 @@ static enum st_refresher select_refresher(const struct call *call,
 	default:
 		if (local_offer)
 			return offerer_refresher(call);
-		return call_is_outgoing(call) ? ST_REF_UAS : ST_REF_UAC;
+		/* RFC 4028 Table 2: no refresher in request → UAS decides.
+		 * With auto, default to the local UA role as refresher. */
+		return call_is_outgoing(call) ? ST_REF_UAC : ST_REF_UAS;
 	}
 }
 
@@ -446,10 +470,16 @@ static void handle_refresh_2xx_response(struct sessiontimer *st,
 	parse_msg_session_params(msg, &interval, &min_se, &refresher);
 
 	if (interval) {
+		uint32_t effective_min = st->min_se;
+
 		if (min_se > st->peer_min_se)
 			st->peer_min_se = min_se;
-		if (st->peer_min_se && interval < st->peer_min_se)
-			interval = st->peer_min_se;
+		if (st->peer_min_se > effective_min)
+			effective_min = st->peer_min_se;
+		if (min_se > effective_min)
+			effective_min = min_se;
+
+		interval = clamp_session_interval(interval, effective_min);
 		if (refresher == ST_REF_NONE)
 			refresher = default_refresher_msg(st->call, false);
 		restart_iv = interval;
@@ -476,6 +506,16 @@ static void update_session_timer(struct sessiontimer *st,
 {
 	if (!st)
 		return;
+
+	{
+		uint32_t effective_min = st->min_se;
+
+		if (st->peer_min_se > effective_min)
+			effective_min = st->peer_min_se;
+
+		session_interval = clamp_session_interval(session_interval,
+							effective_min);
+	}
 
 	st->session_interval = session_interval;
 	st->refresher = refresher;
@@ -549,8 +589,17 @@ static void negotiate_from_msg(struct sessiontimer *st,
 	if (min_se > st->peer_min_se)
 		st->peer_min_se = min_se;
 
-	if (st->peer_min_se && session_interval < st->peer_min_se)
-		session_interval = st->peer_min_se;
+	{
+		uint32_t effective_min = st->min_se;
+
+		if (st->peer_min_se > effective_min)
+			effective_min = st->peer_min_se;
+		if (min_se > effective_min)
+			effective_min = min_se;
+
+		session_interval = clamp_session_interval(session_interval,
+							effective_min);
+	}
 
 	if (refresher == ST_REF_NONE)
 		refresher = default_refresher_msg(st->call, request);
@@ -936,10 +985,17 @@ static int handle_422_response(struct sessiontimer *st,
 		return EINVAL;
 	}
 
-	/* Raise Session-Expires to satisfy peer minimum. Keep advertising our
+	/* Raise Session-Expires above peer minimum. Keep advertising our
 	 * local Min-SE policy in Min-SE header on the retry. */
-	if (st->peer_min_se && st->session_interval < st->peer_min_se)
-		st->session_interval = st->peer_min_se;
+	{
+		uint32_t effective_min = st->min_se;
+
+		if (st->peer_min_se > effective_min)
+			effective_min = st->peer_min_se;
+
+		st->session_interval = clamp_session_interval(st->session_interval,
+							      effective_min);
+	}
 
 	debug("sessiontimer: retry with interval=%u\n", st->session_interval);
 
@@ -1123,12 +1179,12 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 		if (!st)
 			break;
 
-		st->session_interval = default_session_interval;
+		st->session_interval = clamp_session_interval(
+			default_session_interval, st->min_se);
 		st->refresher = select_refresher(call, NULL, true, ST_REF_NONE);
 		st->is_refresher = refresher_is_local(st);
 		if (refresher_pref == ST_REF_PREF_AUTO) {
-			/* Tester-friendly: let the callee pick refresher in
-			 * 2xx when we initiate the timer offer. */
+			/* RFC 4028: omit refresher so callee may choose in 2xx. */
 			debug("sessiontimer: propose interval=%u (no refresher) "
 			      "on INVITE\n", st->session_interval);
 			invite_headers(call, st->session_interval, st->min_se,
