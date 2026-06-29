@@ -400,41 +400,37 @@ static enum st_refresher peer_refresh_response_hdr_refresher(
 }
 
 
-/* Dialog refresher after a peer refresh; auto ignores header uac/uas flip. */
-static enum st_refresher dialog_refresher_from_peer_refresh(
+/* Dialog refresher role: wire refresh uses uac; do not flip negotiated role. */
+static enum st_refresher dialog_refresher_role(
 	const struct sessiontimer *st, enum st_refresher hdr_refresher)
 {
 	(void)hdr_refresher;
 
-	/* Once negotiated, never swap refresher because refresh direction flips. */
 	if (st->refresher != ST_REF_NONE)
 		return st->refresher;
 
-	if (refresher_pref == ST_REF_PREF_AUTO) {
-		return call_is_outgoing(st->call) ? ST_REF_UAS : ST_REF_UAC;
+	switch (refresher_pref) {
+	case ST_REF_PREF_UAC:  return ST_REF_UAC;
+	case ST_REF_PREF_UAS:  return ST_REF_UAS;
+	default:
+		return local_refresher(st);
 	}
-
-	if (hdr_refresher != ST_REF_NONE)
-		return hdr_refresher;
-
-	return call_is_outgoing(st->call) ? ST_REF_UAS : ST_REF_UAC;
 }
 
 
-/* Dialog refresher after our refresh gets a 2xx (auto keeps prior role). */
+/* Dialog refresher after a peer refresh. */
+static enum st_refresher dialog_refresher_from_peer_refresh(
+	const struct sessiontimer *st, enum st_refresher hdr_refresher)
+{
+	return dialog_refresher_role(st, hdr_refresher);
+}
+
+
+/* Dialog refresher after our refresh gets a 2xx. */
 static enum st_refresher refresh_2xx_dialog_refresher(
 	const struct sessiontimer *st, enum st_refresher hdr_refresher)
 {
-	if (refresher_pref == ST_REF_PREF_AUTO) {
-		if (st->refresher != ST_REF_NONE)
-			return st->refresher;
-		return local_refresher(st);
-	}
-
-	if (hdr_refresher != ST_REF_NONE)
-		return hdr_refresher;
-
-	return local_refresher(st);
+	return dialog_refresher_role(st, hdr_refresher);
 }
 
 
