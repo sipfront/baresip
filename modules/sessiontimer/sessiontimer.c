@@ -67,7 +67,7 @@ static bool module_enabled = true;
 static enum st_refresher_pref refresher_pref = ST_REF_PREF_AUTO;
 
 
-/* Session-Expires must be strictly greater than Min-SE. */
+/* Session-Expires must not be below Min-SE (RFC 4028). */
 static uint32_t clamp_session_interval(uint32_t interval, uint32_t min_se)
 {
 	if (!interval)
@@ -76,12 +76,10 @@ static uint32_t clamp_session_interval(uint32_t interval, uint32_t min_se)
 	if (interval < MIN_SESSION_INTERVAL)
 		interval = MIN_SESSION_INTERVAL;
 
-	if (min_se && interval <= min_se) {
-		debug("sessiontimer: raising interval %u above Min-SE %u\n",
+	if (min_se && interval < min_se) {
+		debug("sessiontimer: raising interval %u to Min-SE %u\n",
 		      interval, min_se);
-		interval = min_se + 1;
-		if (interval < MIN_SESSION_INTERVAL)
-			interval = MIN_SESSION_INTERVAL;
+		interval = min_se;
 	}
 
 	return interval;
@@ -1051,7 +1049,7 @@ static int handle_422_response(struct sessiontimer *st,
 		return EINVAL;
 	}
 
-	/* Raise Session-Expires above peer minimum. Keep advertising our
+	/* Raise Session-Expires to satisfy peer minimum. Keep advertising our
 	 * local Min-SE policy in Min-SE header on the retry. */
 	{
 		uint32_t effective_min = st->min_se;
