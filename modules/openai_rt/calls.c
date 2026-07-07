@@ -15,7 +15,7 @@ enum call_mq_events {
 	MQ_SEND_DIGIT,
 	MQ_API_CALL,
 	MQ_TRANSFER,
-	MQ_OPENAI_RESPONSE,
+	MQ_VOICEAI_CONTENT,
 };
 
 /* Static module state */
@@ -36,7 +36,7 @@ static void mqueue_handler(int id, void *data, void *arg)
 	}
 	
 	/* Validate event ID to detect corruption */
-	if (id < 0 || id > MQ_OPENAI_RESPONSE) {
+	if (id < 0 || id > MQ_VOICEAI_CONTENT) {
 		warning("openai_rt: Invalid mqueue event ID: %d (possible corruption)\n", id);
 		return;
 	}
@@ -121,20 +121,19 @@ static void mqueue_handler(int id, void *data, void *arg)
 		}
 		break;
 
-	case MQ_OPENAI_RESPONSE:
+	case MQ_VOICEAI_CONTENT:
 		{
-			char *response_json = (char *)data;
-			DEBUG_INFO("mqueue_handler: Processing OpenAI response\n");
+			char *payload = (char *)data;
+			DEBUG_INFO("mqueue_handler: Emitting VOICEAI_CONTENT %s\n", payload);
 			if (g_oairt.current_call) {
-				warning("openai_rt: emit OPENAI_RESPONSE (%d)\n", UA_EVENT_OPENAI_RESPONSE);
-				bevent_call_emit(UA_EVENT_OPENAI_RESPONSE, g_oairt.current_call,
-				                "%s", response_json);
+				bevent_call_emit(UA_EVENT_VOICEAI_CONTENT, g_oairt.current_call,
+				                "%s", payload);
 			}
 			else {
-				DEBUG_INFO("mqueue_handler: No active call for OpenAI response\n");
+				DEBUG_INFO("mqueue_handler: No active call for voice-AI content\n");
 			}
-			/* Free the allocated response string */
-			mem_deref(response_json);
+			/* Free the allocated payload string */
+			mem_deref(payload);
 		}
 		break;
 		
@@ -254,9 +253,11 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 		info("openai_rt: Call CLOSED\n");
 		DEBUG_INFO("Call closed - queuing end event\n");
 
-		/* Persist the conversation trace into the artifacts dir before teardown, so the
-		 * agent's artifact-upload loop ships it to S3 (no-op unless capture is enabled).
-		 * Runs on the RE main thread here, which is safe for file I/O. */
+		/* Emit the last pending turn, then persist the conversation trace into the
+		 * artifacts dir before teardown, so the agent's artifact-upload loop ships it to
+		 * S3 (no-op unless capture is enabled). Runs on the RE main thread here, which is
+		 * safe for file I/O. */
+		trace_flush();
 		trace_write_file();
 
 		/* Stop audio threads before marking call as inactive */
@@ -721,47 +722,49 @@ out:
 
 
 /**
- * Queue OpenAI response for event emission - thread-safe
- * This function can be called from any thread. The actual bevent emission
- * will be executed in the RE main event loop thread via mqueue.
+ * Queue a voice-AI transcript-content event for emission - thread-safe.
+ * Builds a JSON payload {"side":"self|other","content":"..."} and emits it as
+ * UA_EVENT_VOICEAI_CONTENT from the RE main thread via the mqueue.
  *
- * @param response_json  JSON string of the response (will be copied)
+ * @param side     "self" (our own model) or "other" (the far end / bot under test)
+ * @param content  the transcript text for this turn/fragment (will be copied+escaped)
  * @return 0 if success, error code otherwise
  */
-int calls_queue_openai_response(const char *response_json)
+int calls_queue_voiceai_content(const char *side, const char *content)
 {
-	char *json_copy = NULL;
+	char *escaped = NULL;
+	char *payload = NULL;
 	int err;
-	
-	if (calls_state.shutting_down) {
-		DEBUG_INFO("calls_queue_openai_response: Ignoring during shutdown\n");
+
+	if (calls_state.shutting_down)
 		return EINTR;
-	}
-	
+
 	if (!calls_state.mq) {
-		warning("openai_rt: calls_queue_openai_response: mqueue not initialized\n");
+		warning("openai_rt: calls_queue_voiceai_content: mqueue not initialized\n");
 		return EINVAL;
 	}
-	
-	if (!response_json) {
-		warning("openai_rt: calls_queue_openai_response: NULL response\n");
+
+	if (!side || !content) {
+		warning("openai_rt: calls_queue_voiceai_content: NULL side/content\n");
 		return EINVAL;
 	}
-	
-	/* Allocate memory for the JSON string (will be freed in mqueue handler) */
-	err = str_dup(&json_copy, response_json);
+
+	err = json_escape(&escaped, content);
+	if (err)
+		return err;
+
+	err = re_sdprintf(&payload, "{\"side\":\"%s\",\"content\":\"%s\"}",
+	                  side, escaped ? escaped : "");
+	mem_deref(escaped);
+	if (err || !payload)
+		return err ? err : ENOMEM;
+
+	err = mqueue_push(calls_state.mq, MQ_VOICEAI_CONTENT, payload);
 	if (err) {
-		warning("openai_rt: Failed to duplicate response JSON: %m\n", err);
+		warning("openai_rt: Failed to queue voice-AI content: %m\n", err);
+		mem_deref(payload);
 		return err;
 	}
-	
-	DEBUG_INFO("calls_queue_openai_response: Queuing OpenAI response\n");
-	err = mqueue_push(calls_state.mq, MQ_OPENAI_RESPONSE, json_copy);
-	if (err) {
-		warning("openai_rt: Failed to queue OpenAI response: %m\n", err);
-		mem_deref(json_copy);
-		return err;
-	}
-	
+
 	return 0;
 }

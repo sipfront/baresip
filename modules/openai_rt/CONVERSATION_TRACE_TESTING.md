@@ -15,7 +15,7 @@ completion and turn-taking.
 |---|---|
 | `trace.c`, `trace.h` (new) | Self-contained, mutex-guarded trace store: turns, observable tool-calls, events; serializes to `conversation-trace.json`. |
 | `openai.c` | `input_audio_transcription` added to the session update (gated by `openai_rt_transcribe`); parse branches for `conversation.item.input_audio_transcription.completed` → **OTHER** and `response.output_audio_transcript.done` / `response.audio_transcript.done` → **SELF**. New observable-action tool defs (`record_confirmation_number`, `record_quoted_price`). |
-| `gemini.c` | `inputAudioTranscription` added to setup (gated) — **input only**, mirroring OpenAI; `outputAudioTranscription` is deliberately NOT enabled (it floods serverContent with fragments and regresses Gemini turn-taking). Parses `serverContent.inputTranscription.text` → **OTHER**; the SELF (our) transcript comes from post-call ASR. |
+| `gemini.c` | `inputAudioTranscription` + `outputAudioTranscription` added to setup (gated), with `responseModalities` kept AUDIO-only. Parses `serverContent.inputTranscription.text` → **OTHER** and `outputTranscription.text` → **SELF**. Streamed fragments are coalesced by `trace.c`. (Note: `outputAudioTranscription` previously correlated with a turn-taking regression; re-enabled per request — re-test that the caller still yields.) |
 | `websocket.c` | `handle_function_call_cb` records observable-action tool-calls into the trace and acks them; `handle_speech_started_cb` records a `speech_started` event. |
 | `calls.c` | `trace_reset()` on `UA_EVENT_CALL_ESTABLISHED`; `trace_write_file()` on `UA_EVENT_CALL_CLOSED`. |
 | `openai_rt.c` / `utils.c` / `openai_rt.h` | Lifecycle (`trace_init`/`trace_close`), config (`openai_rt_transcribe`, `openai_rt_trace_dir`). |
@@ -110,12 +110,16 @@ not be verified here:
   both `response.output_audio_transcript.done` and `response.audio_transcript.done`; the
   agent-side event is `conversation.item.input_audio_transcription.completed`. Confirm these
   against the model in use (`OPENAI_TRANSCRIBE_MODEL` defaults to `whisper-1`).
-- **Gemini Live**: setup enables `inputAudioTranscription` only (AGENT/bot-under-test side);
-  transcripts arrive as `serverContent.inputTranscription.text`. `outputAudioTranscription` is
-  intentionally disabled — enabling it streamed hundreds of fragments of our own model's audio
-  and regressed automatic turn-taking (the caller stopped yielding). Our own (caller) transcript
-  for Gemini is recovered post-call from the ASR pipeline. Streamed fragments are coalesced into
-  whole turns by `trace.c` (TRACE_COALESCE_MS).
+- **Gemini Live**: setup enables `inputAudioTranscription` (OTHER) and `outputAudioTranscription`
+  (SELF); transcripts arrive as `serverContent.inputTranscription.text` /
+  `outputTranscription.text`. `responseModalities` is kept **AUDIO-only** (adding a TEXT modality
+  can make the model loop). Streamed fragments are coalesced into whole turns by `trace.c`
+  (TRACE_COALESCE_MS). NOTE: `outputAudioTranscription` previously correlated with a turn-taking
+  regression (the caller not yielding); it is re-enabled per request with AUDIO-only modality —
+  re-test that the caller still yields and only reconsider disabling it if the loop returns.
+
+Both backends also emit each transcript turn as a `VOICEAI_CONTENT` baresip event
+(`{"side":"self|other","content":"..."}`), tagged by side.
 
 If a name is off, transcripts simply won't be captured (no crash) — the eval lambda then
 falls back to the Call-Analytics / transcribe metrics, and only observable-action checks and

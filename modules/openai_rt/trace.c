@@ -41,6 +41,7 @@ struct trace_turn {
 	char *text;
 	uint64_t ts_ms;    /* start of the (possibly coalesced) turn */
 	uint64_t end_ms;   /* time of the most recent fragment merged in */
+	bool emitted;      /* whether this (combined) turn was already logged + evented */
 };
 
 struct trace_toolcall {
@@ -159,12 +160,42 @@ static uint64_t rel_ms_locked(void)
 	return now - g_trace.call_start_ms;
 }
 
+/* Log the finished (coalesced) turn and emit it as a VOICEAI_CONTENT event, tagged by
+ * side. Called with no lock held (mqueue is independently thread-safe). */
+static void emit_turn(const char *role, const char *text)
+{
+	const char *side = (role && strcmp(role, TRACE_ROLE_SELF) == 0) ? "self" : "other";
+	DEBUG_INFO("trace: turn %s: %.500s\n", role, text);
+	calls_queue_voiceai_content(side, text);
+}
+
+/* Snapshot the last turn (role+text) for emission if it has not been emitted yet, and
+ * mark it emitted. Caller must hold the mutex; returns duplicated strings (or NULLs)
+ * that the caller emits + frees after unlocking. */
+static void take_pending_turn_locked(char **role, char **text)
+{
+	struct le *tail = list_tail(&g_trace.turns);
+	struct trace_turn *last = tail ? list_ledata(tail) : NULL;
+	*role = NULL;
+	*text = NULL;
+	if (last && !last->emitted) {
+		if (str_dup(role, last->role) || str_dup(text, last->text)) {
+			mem_deref(*role);
+			mem_deref(*text);
+			*role = *text = NULL;
+			return;
+		}
+		last->emitted = true;
+	}
+}
+
 void trace_add_turn(const char *role, const char *text)
 {
 	struct trace_turn *t;
 	struct le *tail;
 	struct trace_turn *last;
 	uint64_t now;
+	char *done_role = NULL, *done_text = NULL;
 
 	if (!g_trace.inited || !g_trace.enabled)
 		return;
@@ -175,7 +206,7 @@ void trace_add_turn(const char *role, const char *text)
 	now = rel_ms_locked();
 
 	/* Coalesce with the previous turn when it is the same speaker and close in time
-	 * (streamed transcription fragments). */
+	 * (streamed transcription fragments) -- do not emit yet, the turn is still growing. */
 	tail = list_tail(&g_trace.turns);
 	last = tail ? list_ledata(tail) : NULL;
 	if (last && strcmp(last->role, role) == 0 &&
@@ -190,6 +221,10 @@ void trace_add_turn(const char *role, const char *text)
 		return;
 	}
 
+	/* A new turn begins -> the previous turn is now complete; snapshot it to emit the
+	 * combined text (once) after we release the lock. */
+	take_pending_turn_locked(&done_role, &done_text);
+
 	t = mem_zalloc(sizeof(*t), turn_destructor);
 	if (t && str_dup(&t->role, role) == 0 && str_dup(&t->text, text) == 0) {
 		t->ts_ms = now;
@@ -201,7 +236,30 @@ void trace_add_turn(const char *role, const char *text)
 	}
 	pthread_mutex_unlock(&g_trace.mtx);
 
-	DEBUG_INFO("trace: turn %s: %.80s\n", role, text);
+	if (done_text) {
+		emit_turn(done_role, done_text);
+		mem_deref(done_role);
+		mem_deref(done_text);
+	}
+}
+
+/* Emit the final pending turn (the last speaker's combined text), e.g. at call close. */
+void trace_flush(void)
+{
+	char *role = NULL, *text = NULL;
+
+	if (!g_trace.inited || !g_trace.enabled)
+		return;
+
+	pthread_mutex_lock(&g_trace.mtx);
+	take_pending_turn_locked(&role, &text);
+	pthread_mutex_unlock(&g_trace.mtx);
+
+	if (text) {
+		emit_turn(role, text);
+		mem_deref(role);
+		mem_deref(text);
+	}
 }
 
 void trace_add_toolcall(const char *name, const char *arguments)

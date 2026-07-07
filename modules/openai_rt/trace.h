@@ -36,10 +36,15 @@ bool trace_enabled(void);
 /* Per-call lifecycle. */
 void trace_reset(void);   /* clear accumulated trace and stamp the call start time */
 
-/* Capture (safe to call from the WebSocket thread). */
+/* Capture (safe to call from the WebSocket thread). trace_add_turn coalesces streamed
+ * fragments into one turn and, when a turn completes, logs it and emits it as a
+ * VOICEAI_CONTENT event (combined text, tagged by side). */
 void trace_add_turn(const char *role, const char *text);
 void trace_add_toolcall(const char *name, const char *arguments);
 void trace_add_event(const char *kind);
+
+/* Emit the final pending turn (call at end of call, before writing the trace file). */
+void trace_flush(void);
 
 /* Serialize the accumulated trace to <trace_dir>/conversation-trace.json (or the
  * baresip config dir when no trace_dir is configured). Returns 0 on success and is

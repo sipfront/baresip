@@ -264,6 +264,6 @@ int calls_api_call(const char *method, const char *uri,
                    const char *content_type, const char *auth_type,
                    const char *auth_username, const char *auth_password,
                    const char *body, char **output);
-int calls_queue_openai_response(const char *response_json);
+int calls_queue_voiceai_content(const char *side, const char *content);
 
 #endif /* OPENAI_RT_H */

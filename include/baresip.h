@@ -963,7 +963,7 @@ enum ua_event {
 	UA_EVENT_CALL_ENDED_REMOTE,
 	UA_EVENT_CALL_STAT,
 	
-	UA_EVENT_OPENAI_RESPONSE,
+	UA_EVENT_VOICEAI_CONTENT,  /**< Voice-AI transcript content, tagged self/other */
 
 	UA_EVENT_AUDIO_LATENCY_OUTGOING,  /**< Tone sent on encoder side */
 	UA_EVENT_AUDIO_LATENCY_INCOMING,  /**< Tone detected on decoder side */

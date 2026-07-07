@@ -682,12 +682,10 @@ static void handle_response_done_cb(const char *response_json, void *arg)
 		start_transfer_after_tts(dest);
 	}
 
-    if (response_json) {
-        int err = calls_queue_openai_response(response_json);
-        if (err) {
-            warning("openai_rt: Failed to queue OpenAI response: %m\n", err);
-        }
-    }
+    (void)response_json;
+    /* Transcript content is emitted per turn as UA_EVENT_VOICEAI_CONTENT from the
+     * transcription parse branches (tagged self/other); response.done is only an
+     * end-of-turn marker now. */
 }
  
  /* WebSocket callback */

@@ -668,8 +668,8 @@ static int openai_parse_message(const char *json_str,
 			}
 		}
 	} else if (strcmp(type, "conversation.item.input_audio_transcription.completed") == 0) {
-		/* Transcription of the input audio = the AGENT under test speaking to us.
-		 * Only emitted when input transcription is enabled (openai_rt_transcribe). */
+		/* Transcription of the input audio = the far end (bot under test) speaking to
+		 * us. Only emitted when input transcription is enabled (openai_rt_transcribe). */
 		struct json_object *t = NULL;
 		if (json_object_object_get_ex(root, "transcript", &t) &&
 		    json_object_is_type(t, json_type_string)) {
@@ -677,7 +677,7 @@ static int openai_parse_message(const char *json_str,
 		}
 	} else if (strcmp(type, "response.output_audio_transcript.done") == 0 ||
 	           strcmp(type, "response.audio_transcript.done") == 0) {
-		/* Transcript of our own generated audio = the simulated CALLER (us). The two
+		/* Transcript of our own generated audio = this endpoint (our model). The two
 		 * event names cover the GA and beta Realtime API namings. */
 		struct json_object *t = NULL;
 		if (json_object_object_get_ex(root, "transcript", &t) &&

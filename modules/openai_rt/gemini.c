@@ -400,15 +400,12 @@ static int gemini_build_session_update(const char *prompt, char **json_msg)
 		re_sdprintf(&tools_block, "\"tools\":%s,", tools_json);
 	}
 
-	/* Optionally enable INPUT transcription so we capture the AGENT under test
-	 * (inputTranscription) into the conversation trace -- mirroring the working OpenAI
-	 * setup, which only enables input transcription. We deliberately do NOT enable
-	 * outputAudioTranscription: transcribing our own model's audio floods serverContent
-	 * with hundreds of fragments and regresses Gemini's automatic turn-taking (the
-	 * caller stops yielding). Our own (caller) transcript is recovered post-call from the
-	 * ASR pipeline. Off by default -> behaviour unchanged. */
+	/* Optionally enable both-direction transcription so the trace captures OTHER
+	 * (inputAudioTranscription) and SELF (outputAudioTranscription). Kept purely as
+	 * transcription config with responseModalities = ["AUDIO"] only (adding a TEXT
+	 * modality is what can make the model loop). Off by default -> behaviour unchanged. */
 	const char *transcribe_block = g_oairt.transcribe
-		? "\"inputAudioTranscription\":{},"
+		? "\"inputAudioTranscription\":{},\"outputAudioTranscription\":{},"
 		: "";
 
 	/* Build setup message - always include voice config and realtime input config for interruption detection */
@@ -739,8 +736,8 @@ static int gemini_parse_message(const char *json_str,
 		}
 
 		/* Transcription (only present when openai_rt_transcribe is enabled):
-		 *  inputTranscription  = the AGENT under test speaking to us,
-		 *  outputTranscription = our own simulated CALLER audio. */
+		 *  inputTranscription  = the far end (bot under test) speaking to us (OTHER),
+		 *  outputTranscription = our own model's audio (SELF). */
 		{
 			struct json_object *in_tr = get_json_object_field_optional(server_content, "inputTranscription");
 			const char *in_txt = in_tr ? get_json_string_field_optional(in_tr, "text") : NULL;
