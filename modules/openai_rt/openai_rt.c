@@ -3,6 +3,7 @@
  */
 #include "openai_rt.h"
 #include "ai_model.h"
+#include "trace.h"
 
 /* Global instance */
 struct openai_rt g_oairt;
@@ -24,6 +25,7 @@ static void module_destructor(void *arg)
 	websocket_close();
 	audio_close();
 	ai_model_close();
+	trace_close();
 
 	/* Clear global state */
 	memset(&g_oairt, 0, sizeof(g_oairt));
@@ -48,6 +50,14 @@ static int module_init(void)
 	if (!str_isset(g_oairt.api_key)) {
 		warning("openai_rt: No API key configured. Please set openai_rt_api_key in config\n");
 		return EINVAL;
+	}
+
+	/* Initialize conversation-trace capture (no-op unless openai_rt_transcribe=yes) */
+	trace_init();
+	trace_set_enabled(g_oairt.transcribe);
+	if (g_oairt.transcribe) {
+		info("openai_rt: conversation-trace capture ENABLED (dir: %s)\n",
+			str_isset(g_oairt.trace_dir) ? g_oairt.trace_dir : "<config dir>");
 	}
 
 	/* Initialize AI model system */

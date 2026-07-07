@@ -202,6 +202,13 @@ int read_config(void)
     }
     conf_get_str(conf_cur(), "openai_rt_voice", g_oairt.voice, sizeof(g_oairt.voice));
 
+    /* Conversation-trace capture (task-based voicebot assessment). Default off so
+     * plain voice / fixed-media calls behave exactly as before. When enabled we add
+     * input-audio transcription to the session and write a conversation-trace.json. */
+    g_oairt.transcribe = false;
+    conf_get_bool(conf_cur(), "openai_rt_transcribe", &g_oairt.transcribe);
+    conf_get_str(conf_cur(), "openai_rt_trace_dir", g_oairt.trace_dir, sizeof(g_oairt.trace_dir));
+
     /* Gemini VAD config */
     g_oairt.gemini_vad_enabled = true;
     conf_get_bool(conf_cur(), "openai_rt_gemini_vad_enabled", &g_oairt.gemini_vad_enabled);

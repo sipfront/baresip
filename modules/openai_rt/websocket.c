@@ -9,6 +9,7 @@
  #include <json-c/json.h>
  #include <pthread.h>
  #include "openai_rt.h"
+ #include "trace.h"
  #include "ai_model.h"
  
 /* Forward declarations */
@@ -438,6 +439,8 @@ static void handle_speech_started_cb(void *arg)
     (void)arg;
 
     DEBUG_INFO("openai_rt: speech.started, interrupting outbound TTS\n");
+    /* Record the barge-in as a turn-taking event for the evaluator. */
+    trace_add_event("speech_started");
     audio_clear_injection_buffer();
 }
 
@@ -626,6 +629,18 @@ static void execute_tool_call(const char *call_id, const char *name,
 			                          "Error: Missing or invalid 'destination' parameter");
 		}
 		json_object_put(args_obj);
+	}
+	else if (strcmp(name, AI_TOOL_RECORD_CONFIRMATION_NUMBER.name) == 0 ||
+	         strcmp(name, AI_TOOL_RECORD_QUOTED_PRICE.name) == 0) {
+		/* Observable-action tools: capture what the simulated caller heard into the
+		 * conversation trace for the downstream task evaluator. No side effect on the
+		 * call -- just record the arguments and acknowledge. */
+		DEBUG_INFO("openai_rt: Recording observable action '%s'\n", name);
+		trace_add_toolcall(name, arguments);
+		send_function_call_output(call_id, name, "Recorded");
+		if (g_oairt.backend_type == AI_BACKEND_OPENAI_REALTIME) {
+			send_response_create();
+		}
 	}
 	else {
 		/* This shouldn't happen if validation above worked, but handle it anyway */

@@ -56,6 +56,9 @@ struct openai_rt {
     bool wait_for_greeting;
     float temperature;        /* Temperature for AI model generation (default 0.7) */
     char voice[64];           /* Voice name for Gemini (e.g., "Aoede") */
+    /* Conversation-trace capture (task-based voicebot assessment; default off) */
+    bool transcribe;          /* enable input-audio transcription + conversation trace */
+    char trace_dir[512];      /* dir to write conversation-trace.json (agent's artifacts dir) */
     /* Gemini VAD config */
     bool gemini_vad_enabled;
     char gemini_vad_start_sensitivity[64];

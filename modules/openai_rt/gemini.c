@@ -15,6 +15,7 @@
 
 #include "openai_rt.h"
 #include "ai_model.h"
+#include "trace.h"
 #include <json-c/json.h>
 #include <libwebsockets.h>
 
@@ -398,7 +399,14 @@ static int gemini_build_session_update(const char *prompt, char **json_msg)
 	if (has_tools) {
 		re_sdprintf(&tools_block, "\"tools\":%s,", tools_json);
 	}
-	
+
+	/* Optionally enable both-direction transcription so we capture the AGENT under
+	 * test (inputTranscription) and our own simulated caller (outputTranscription)
+	 * into the conversation trace. Off by default -> behaviour unchanged. */
+	const char *transcribe_block = g_oairt.transcribe
+		? "\"inputAudioTranscription\":{},\"outputAudioTranscription\":{},"
+		: "";
+
 	/* Build setup message - always include voice config and realtime input config for interruption detection */
 	err = re_sdprintf(json_msg,
 		"{"
@@ -425,10 +433,12 @@ static int gemini_build_session_update(const char *prompt, char **json_msg)
 				"},"
 				"%s"
 				"%s"
+				"%s"
 				"\"sessionResumption\":{}"
 			"}"
 		"}",
-		model_name, voice_name, temperature, escaped_prompt, 
+		model_name, voice_name, temperature, escaped_prompt,
+		transcribe_block,
 		vad_json ? vad_json : "",
 		tools_block ? tools_block : "");
 
@@ -716,6 +726,21 @@ static int gemini_parse_message(const char *json_str,
 				DEBUG_INFO("openai_rt: Gemini serverContent.interrupted=True, clearing audio buffer\n");
 				audio_clear_injection_buffer();
 			}
+		}
+
+		/* Transcription (only present when openai_rt_transcribe is enabled):
+		 *  inputTranscription  = the AGENT under test speaking to us,
+		 *  outputTranscription = our own simulated CALLER audio. */
+		{
+			struct json_object *in_tr = get_json_object_field_optional(server_content, "inputTranscription");
+			const char *in_txt = in_tr ? get_json_string_field_optional(in_tr, "text") : NULL;
+			if (in_txt && *in_txt)
+				trace_add_turn(TRACE_ROLE_AGENT, in_txt);
+
+			struct json_object *out_tr = get_json_object_field_optional(server_content, "outputTranscription");
+			const char *out_txt = out_tr ? get_json_string_field_optional(out_tr, "text") : NULL;
+			if (out_txt && *out_txt)
+				trace_add_turn(TRACE_ROLE_CALLER, out_txt);
 		}
 
 		/* Check for modelTurn with audio data */

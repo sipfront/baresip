@@ -11,6 +11,7 @@
 
 #include "openai_rt.h"
 #include "ai_model.h"
+#include "trace.h"
 #include <json-c/json.h>
 #include <libwebsockets.h>
 
@@ -19,6 +20,9 @@
 #define OPENAI_API_PORT 443
 #define OPENAI_API_PATH_BASE "/v1/realtime"
 #define OPENAI_MODEL_DEFAULT "gpt-realtime"
+/* Model used for input-audio (agent-under-test) transcription when
+ * openai_rt_transcribe is enabled. */
+#define OPENAI_TRANSCRIBE_MODEL "whisper-1"
 
 /* Tool call definitions - centralized for consistency across implementations */
 const struct ai_tool_call AI_TOOL_HANGUP_CALL = {
@@ -100,16 +104,55 @@ const struct ai_tool_call AI_TOOL_TRANSFER_CALL = {
 		"}"
 };
 
+/* Observable-action tools: let the simulated caller record what it heard so the
+ * downstream task evaluator can verify outcomes structurally (not just from the
+ * transcript). They perform no side effect on the call -- the arguments are captured
+ * into the conversation trace and acknowledged. Enabled only when named in
+ * openai_rt_tool_calls. */
+const struct ai_tool_call AI_TOOL_RECORD_CONFIRMATION_NUMBER = {
+	.name = "record_confirmation_number",
+	.description = "Record a confirmation, reference, or case number the agent provided",
+	.parameters_json =
+		"{"
+			"\"type\": \"object\","
+			"\"properties\": {"
+				"\"value\": {"
+					"\"type\": \"string\","
+					"\"description\": \"The confirmation/reference/case number exactly as stated by the agent\""
+				"}"
+			"},"
+			"\"required\": [\"value\"]"
+		"}"
+};
+
+const struct ai_tool_call AI_TOOL_RECORD_QUOTED_PRICE = {
+	.name = "record_quoted_price",
+	.description = "Record a price, amount, or fee the agent quoted",
+	.parameters_json =
+		"{"
+			"\"type\": \"object\","
+			"\"properties\": {"
+				"\"value\": {"
+					"\"type\": \"string\","
+					"\"description\": \"The price/amount exactly as stated by the agent (include currency)\""
+				"}"
+			"},"
+			"\"required\": [\"value\"]"
+		"}"
+};
+
 /* Array of all available tool calls */
 const struct ai_tool_call *AI_AVAILABLE_TOOLS[] = {
 	&AI_TOOL_HANGUP_CALL,
 	&AI_TOOL_SEND_DTMF,
 	&AI_TOOL_API_CALL,
 	&AI_TOOL_TRANSFER_CALL,
+	&AI_TOOL_RECORD_CONFIRMATION_NUMBER,
+	&AI_TOOL_RECORD_QUOTED_PRICE,
 	NULL  /* Sentinel */
 };
 
-const size_t AI_AVAILABLE_TOOLS_COUNT = 4;
+const size_t AI_AVAILABLE_TOOLS_COUNT = 6;
 
 /* Forward declarations */
 static int openai_init(struct openai_rt *ort);
@@ -410,6 +453,13 @@ static int openai_build_session_update(const char *prompt, char **json_msg)
 		return err;
 	}
 
+	/* Optionally enable input-audio transcription so we capture the AGENT-under-test
+	 * side of the conversation (the model's own speech already surfaces via
+	 * response.output_audio_transcript.done). Off by default -> behaviour unchanged. */
+	const char *audio_block = g_oairt.transcribe
+		? ",\"audio\":{\"input\":{\"transcription\":{\"model\":\"" OPENAI_TRANSCRIBE_MODEL "\"}}}"
+		: "";
+
 	/* Build session update JSON with tools */
 	static const char *session_update_template =
 		"{"
@@ -419,10 +469,11 @@ static int openai_build_session_update(const char *prompt, char **json_msg)
 				"\"instructions\": \"%s\","
 				"\"tool_choice\": \"auto\","
 				"\"tools\": %s"
+				"%s"
 			"}"
 		"}";
 
-	err = re_sdprintf(json_msg, session_update_template, escaped_prompt, tools_json);
+	err = re_sdprintf(json_msg, session_update_template, escaped_prompt, tools_json, audio_block);
 	mem_deref(escaped_prompt);
 	mem_deref(tools_json);
 
@@ -615,6 +666,23 @@ static int openai_parse_message(const char *json_str,
 			if (response_json) {
 				response_done_cb(response_json, cb_arg);
 			}
+		}
+	} else if (strcmp(type, "conversation.item.input_audio_transcription.completed") == 0) {
+		/* Transcription of the input audio = the AGENT under test speaking to us.
+		 * Only emitted when input transcription is enabled (openai_rt_transcribe). */
+		struct json_object *t = NULL;
+		if (json_object_object_get_ex(root, "transcript", &t) &&
+		    json_object_is_type(t, json_type_string)) {
+			trace_add_turn(TRACE_ROLE_AGENT, json_object_get_string(t));
+		}
+	} else if (strcmp(type, "response.output_audio_transcript.done") == 0 ||
+	           strcmp(type, "response.audio_transcript.done") == 0) {
+		/* Transcript of our own generated audio = the simulated CALLER (us). The two
+		 * event names cover the GA and beta Realtime API namings. */
+		struct json_object *t = NULL;
+		if (json_object_object_get_ex(root, "transcript", &t) &&
+		    json_object_is_type(t, json_type_string)) {
+			trace_add_turn(TRACE_ROLE_CALLER, json_object_get_string(t));
 		}
 	} else if (strcmp(type, "error") == 0) {
 		struct json_object *error_obj = get_json_object_field(root, "error", "error");

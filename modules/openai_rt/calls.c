@@ -6,6 +6,7 @@
  #include <rem.h>
 #include <baresip.h>
 #include "openai_rt.h"
+#include "trace.h"
 
 
 /* Message queue events */
@@ -216,6 +217,9 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 			g_oairt.gemini_xfer_scheduled = false;
 			g_oairt.gemini_turn_had_audio = false;
 
+			/* Start a fresh conversation trace for this call (no-op unless enabled) */
+			trace_reset();
+
 			/* Reset audio state for new call */
 			audio_reset_for_new_call();
 			
@@ -249,6 +253,11 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 	case UA_EVENT_CALL_CLOSED:
 		info("openai_rt: Call CLOSED\n");
 		DEBUG_INFO("Call closed - queuing end event\n");
+
+		/* Persist the conversation trace into the artifacts dir before teardown, so the
+		 * agent's artifact-upload loop ships it to S3 (no-op unless capture is enabled).
+		 * Runs on the RE main thread here, which is safe for file I/O. */
+		trace_write_file();
 
 		/* Stop audio threads before marking call as inactive */
 		audio_stop_threads();

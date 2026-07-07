@@ -31,7 +31,8 @@ set(SRCS
     calls.c
     openai.c
     gemini.c
-    ai_model.c)
+    ai_model.c
+    trace.c)
 
 if(STATIC)
     add_library(${PROJECT_NAME} OBJECT ${SRCS})
