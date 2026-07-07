@@ -724,7 +724,13 @@ static int gemini_parse_message(const char *json_str,
 		if (interrupted_obj && json_object_is_type(interrupted_obj, json_type_boolean)) {
 			if (json_object_get_boolean(interrupted_obj)) {
 				DEBUG_INFO("openai_rt: Gemini serverContent.interrupted=True, clearing audio buffer\n");
-				audio_clear_injection_buffer();
+				/* Route through the speech-started callback so the barge-in is both
+				 * recorded in the conversation trace and clears the buffer, matching
+				 * the OpenAI path. Falls back to a direct clear if no callback. */
+				if (speech_started_cb)
+					speech_started_cb(cb_arg);
+				else
+					audio_clear_injection_buffer();
 			}
 		}
 
