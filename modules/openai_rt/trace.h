@@ -6,11 +6,13 @@
  * structured, timestamped trace of that conversation for later scoring by the
  * function-voicebot-eval lambda.
  *
- * Role mapping (important):
- *   - TRACE_ROLE_CALLER = our simulated user  = the Realtime model's OWN audio
- *                         transcript output (what WE say into the call).
- *   - TRACE_ROLE_AGENT  = the voice bot under test = the Realtime model's INPUT
- *                         audio transcription (what the bot says back to us).
+ * Roles are kept generic (this endpoint vs the far end); the lambda maps them to the
+ * concrete SIP role (caller/callee) it already knows from the DB when it fetches the
+ * artifact:
+ *   - TRACE_ROLE_SELF  = this endpoint = the Realtime model's OWN audio transcript
+ *                        output (what WE say into the call).
+ *   - TRACE_ROLE_OTHER = the far end = the Realtime model's INPUT audio transcription
+ *                        (what the other party / bot under test says back to us).
  *
  * Copyright (C) 2025 Sipfront
  */
@@ -19,8 +21,8 @@
 
 #include <stdbool.h>
 
-#define TRACE_ROLE_CALLER "CALLER"  /* our simulated user (Realtime output transcript) */
-#define TRACE_ROLE_AGENT  "AGENT"   /* the voice bot under test (input transcription)  */
+#define TRACE_ROLE_SELF  "SELF"   /* this endpoint = our own model (output transcript) */
+#define TRACE_ROLE_OTHER "OTHER"  /* the far end (input transcription)                 */
 
 /* Module lifecycle (call once at module init/close). */
 void trace_init(void);

@@ -400,11 +400,15 @@ static int gemini_build_session_update(const char *prompt, char **json_msg)
 		re_sdprintf(&tools_block, "\"tools\":%s,", tools_json);
 	}
 
-	/* Optionally enable both-direction transcription so we capture the AGENT under
-	 * test (inputTranscription) and our own simulated caller (outputTranscription)
-	 * into the conversation trace. Off by default -> behaviour unchanged. */
+	/* Optionally enable INPUT transcription so we capture the AGENT under test
+	 * (inputTranscription) into the conversation trace -- mirroring the working OpenAI
+	 * setup, which only enables input transcription. We deliberately do NOT enable
+	 * outputAudioTranscription: transcribing our own model's audio floods serverContent
+	 * with hundreds of fragments and regresses Gemini's automatic turn-taking (the
+	 * caller stops yielding). Our own (caller) transcript is recovered post-call from the
+	 * ASR pipeline. Off by default -> behaviour unchanged. */
 	const char *transcribe_block = g_oairt.transcribe
-		? "\"inputAudioTranscription\":{},\"outputAudioTranscription\":{},"
+		? "\"inputAudioTranscription\":{},"
 		: "";
 
 	/* Build setup message - always include voice config and realtime input config for interruption detection */
@@ -741,12 +745,12 @@ static int gemini_parse_message(const char *json_str,
 			struct json_object *in_tr = get_json_object_field_optional(server_content, "inputTranscription");
 			const char *in_txt = in_tr ? get_json_string_field_optional(in_tr, "text") : NULL;
 			if (in_txt && *in_txt)
-				trace_add_turn(TRACE_ROLE_AGENT, in_txt);
+				trace_add_turn(TRACE_ROLE_OTHER, in_txt);
 
 			struct json_object *out_tr = get_json_object_field_optional(server_content, "outputTranscription");
 			const char *out_txt = out_tr ? get_json_string_field_optional(out_tr, "text") : NULL;
 			if (out_txt && *out_txt)
-				trace_add_turn(TRACE_ROLE_CALLER, out_txt);
+				trace_add_turn(TRACE_ROLE_SELF, out_txt);
 		}
 
 		/* Check for modelTurn with audio data */

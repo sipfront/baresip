@@ -28,11 +28,19 @@
 #define TRACE_FILENAME "conversation-trace.json"
 #define TRACE_SCHEMA   "sipfront.voicebot-trace/1"
 
+/* Some backends (Gemini) stream transcription in many tiny fragments ("Wel", "com",
+ * "e"). Consecutive fragments of the SAME role that arrive within this window are
+ * merged into one turn; a gap larger than this (e.g. the other party speaking) starts
+ * a new turn. OpenAI already delivers whole utterances, so this is effectively a no-op
+ * there. */
+#define TRACE_COALESCE_MS 3000
+
 struct trace_turn {
 	struct le le;
 	char *role;
 	char *text;
-	uint64_t ts_ms;
+	uint64_t ts_ms;    /* start of the (possibly coalesced) turn */
+	uint64_t end_ms;   /* time of the most recent fragment merged in */
 };
 
 struct trace_toolcall {
@@ -154,23 +162,43 @@ static uint64_t rel_ms_locked(void)
 void trace_add_turn(const char *role, const char *text)
 {
 	struct trace_turn *t;
+	struct le *tail;
+	struct trace_turn *last;
+	uint64_t now;
 
 	if (!g_trace.inited || !g_trace.enabled)
 		return;
 	if (!role || !text || !*text)
 		return;
 
-	t = mem_zalloc(sizeof(*t), turn_destructor);
-	if (!t)
-		return;
-	if (str_dup(&t->role, role) || str_dup(&t->text, text)) {
-		mem_deref(t);
+	pthread_mutex_lock(&g_trace.mtx);
+	now = rel_ms_locked();
+
+	/* Coalesce with the previous turn when it is the same speaker and close in time
+	 * (streamed transcription fragments). */
+	tail = list_tail(&g_trace.turns);
+	last = tail ? list_ledata(tail) : NULL;
+	if (last && strcmp(last->role, role) == 0 &&
+	    now >= last->end_ms && (now - last->end_ms) <= TRACE_COALESCE_MS) {
+		char *merged = NULL;
+		if (re_sdprintf(&merged, "%s%s", last->text, text) == 0 && merged) {
+			mem_deref(last->text);
+			last->text = merged;
+			last->end_ms = now;
+		}
+		pthread_mutex_unlock(&g_trace.mtx);
 		return;
 	}
 
-	pthread_mutex_lock(&g_trace.mtx);
-	t->ts_ms = rel_ms_locked();
-	list_append(&g_trace.turns, &t->le, t);
+	t = mem_zalloc(sizeof(*t), turn_destructor);
+	if (t && str_dup(&t->role, role) == 0 && str_dup(&t->text, text) == 0) {
+		t->ts_ms = now;
+		t->end_ms = now;
+		list_append(&g_trace.turns, &t->le, t);
+	}
+	else {
+		mem_deref(t);
+	}
 	pthread_mutex_unlock(&g_trace.mtx);
 
 	DEBUG_INFO("trace: turn %s: %.80s\n", role, text);

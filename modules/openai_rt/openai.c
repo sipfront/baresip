@@ -673,7 +673,7 @@ static int openai_parse_message(const char *json_str,
 		struct json_object *t = NULL;
 		if (json_object_object_get_ex(root, "transcript", &t) &&
 		    json_object_is_type(t, json_type_string)) {
-			trace_add_turn(TRACE_ROLE_AGENT, json_object_get_string(t));
+			trace_add_turn(TRACE_ROLE_OTHER, json_object_get_string(t));
 		}
 	} else if (strcmp(type, "response.output_audio_transcript.done") == 0 ||
 	           strcmp(type, "response.audio_transcript.done") == 0) {
@@ -682,7 +682,7 @@ static int openai_parse_message(const char *json_str,
 		struct json_object *t = NULL;
 		if (json_object_object_get_ex(root, "transcript", &t) &&
 		    json_object_is_type(t, json_type_string)) {
-			trace_add_turn(TRACE_ROLE_CALLER, json_object_get_string(t));
+			trace_add_turn(TRACE_ROLE_SELF, json_object_get_string(t));
 		}
 	} else if (strcmp(type, "error") == 0) {
 		struct json_object *error_obj = get_json_object_field(root, "error", "error");

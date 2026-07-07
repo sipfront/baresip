@@ -14,8 +14,8 @@ completion and turn-taking.
 | File | Change |
 |---|---|
 | `trace.c`, `trace.h` (new) | Self-contained, mutex-guarded trace store: turns, observable tool-calls, events; serializes to `conversation-trace.json`. |
-| `openai.c` | `input_audio_transcription` added to the session update (gated by `openai_rt_transcribe`); parse branches for `conversation.item.input_audio_transcription.completed` → **AGENT** and `response.output_audio_transcript.done` / `response.audio_transcript.done` → **CALLER**. New observable-action tool defs (`record_confirmation_number`, `record_quoted_price`). |
-| `gemini.c` | `inputAudioTranscription`/`outputAudioTranscription` added to setup (gated); parse `serverContent.inputTranscription.text` → **AGENT**, `outputTranscription.text` → **CALLER**. |
+| `openai.c` | `input_audio_transcription` added to the session update (gated by `openai_rt_transcribe`); parse branches for `conversation.item.input_audio_transcription.completed` → **OTHER** and `response.output_audio_transcript.done` / `response.audio_transcript.done` → **SELF**. New observable-action tool defs (`record_confirmation_number`, `record_quoted_price`). |
+| `gemini.c` | `inputAudioTranscription` added to setup (gated) — **input only**, mirroring OpenAI; `outputAudioTranscription` is deliberately NOT enabled (it floods serverContent with fragments and regresses Gemini turn-taking). Parses `serverContent.inputTranscription.text` → **OTHER**; the SELF (our) transcript comes from post-call ASR. |
 | `websocket.c` | `handle_function_call_cb` records observable-action tool-calls into the trace and acks them; `handle_speech_started_cb` records a `speech_started` event. |
 | `calls.c` | `trace_reset()` on `UA_EVENT_CALL_ESTABLISHED`; `trace_write_file()` on `UA_EVENT_CALL_CLOSED`. |
 | `openai_rt.c` / `utils.c` / `openai_rt.h` | Lifecycle (`trace_init`/`trace_close`), config (`openai_rt_transcribe`, `openai_rt_trace_dir`). |
@@ -23,8 +23,13 @@ completion and turn-taking.
 | `CMakeLists.txt` | `trace.c` added to `SRCS`. |
 
 ### Role mapping (important)
-- **CALLER** = our simulated user = the Realtime model's *own output* transcript.
-- **AGENT** = the voice bot under test = the Realtime model's *input-audio* transcription.
+The trace uses **generic** roles (the module doesn't assume SIP direction); the eval
+lambda maps them to the concrete role it already knows from the DB:
+- **SELF** = this endpoint = our simulated user = the Realtime model's *own output* transcript.
+- **OTHER** = the far end (voice bot under test) = the Realtime model's *input-audio* transcription.
+
+The eval lambda `SELECT`s the artifact's `role` column, so SELF resolves to that fetched role
+and OTHER to the session's other party — no role is hardcoded in the lambda.
 
 ## Config keys (new)
 
@@ -74,8 +79,8 @@ libre symbol availability (`json_object_to_json_string_ext`, `fs_fopen`, `fs_isd
      "schema": "sipfront.voicebot-trace/1",
      "duration_ms": 42350,
      "turns": [
-       { "role": "CALLER", "speaker": "CALLER", "text": "Hi, I'd like ...", "ts_ms": 1200 },
-       { "role": "AGENT",  "speaker": "AGENT",  "text": "Sure, that is ...", "ts_ms": 3800 }
+       { "role": "SELF",  "speaker": "SELF",  "text": "Hi, I'd like ...", "ts_ms": 1200 },
+       { "role": "OTHER", "speaker": "OTHER", "text": "Sure, that is ...", "ts_ms": 3800 }
      ],
      "observable_actions": [
        { "name": "record_quoted_price", "arguments": { "value": "$40" }, "ts_ms": 15200 }
@@ -83,8 +88,9 @@ libre symbol availability (`json_object_to_json_string_ext`, `fs_fopen`, `fs_isd
      "events": [ { "kind": "speech_started", "ts_ms": 8100 } ]
    }
    ```
-5. Check both roles appear: **CALLER** turns (our sim) and **AGENT** turns (bot under test).
-   If only CALLER turns appear, input transcription isn't being returned — see caveats.
+5. Check both roles appear: **SELF** turns (our sim) and **OTHER** turns (bot under test).
+   If only SELF turns appear, input transcription isn't being returned — see caveats.
+   (For Gemini, only **OTHER** turns are captured in-session — see the Gemini caveat.)
 
 ## Log checkpoints
 
@@ -104,9 +110,12 @@ not be verified here:
   both `response.output_audio_transcript.done` and `response.audio_transcript.done`; the
   agent-side event is `conversation.item.input_audio_transcription.completed`. Confirm these
   against the model in use (`OPENAI_TRANSCRIBE_MODEL` defaults to `whisper-1`).
-- **Gemini Live**: setup uses `inputAudioTranscription`/`outputAudioTranscription`; transcripts
-  arrive as `serverContent.inputTranscription.text` / `outputTranscription.text`. Confirm for
-  the configured Gemini model.
+- **Gemini Live**: setup enables `inputAudioTranscription` only (AGENT/bot-under-test side);
+  transcripts arrive as `serverContent.inputTranscription.text`. `outputAudioTranscription` is
+  intentionally disabled — enabling it streamed hundreds of fragments of our own model's audio
+  and regressed automatic turn-taking (the caller stopped yielding). Our own (caller) transcript
+  for Gemini is recovered post-call from the ASR pipeline. Streamed fragments are coalesced into
+  whole turns by `trace.c` (TRACE_COALESCE_MS).
 
 If a name is off, transcripts simply won't be captured (no crash) — the eval lambda then
 falls back to the Call-Analytics / transcribe metrics, and only observable-action checks and
