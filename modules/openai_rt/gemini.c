@@ -31,10 +31,8 @@
  * /ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained
  */
 #define GEMINI_API_PATH "/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent"
-/* Default model - can be overridden for ephemeral tokens */
+/* Default model - can be overridden via configuration */
 #define GEMINI_MODEL "gemini-2.5-flash-native-audio-preview-09-2025"
-/* For ephemeral tokens, use gemini-2.5-flash-native-audio-preview-09-2025 */
-#define GEMINI_MODEL_EPHEMERAL "gemini-2.5-flash-native-audio-preview-09-2025"
 
 /* Forward declarations */
 static int gemini_init(struct openai_rt *ort);
@@ -363,14 +361,8 @@ static int gemini_build_session_update(const char *prompt, char **json_msg)
 		return err;
 	}
 	
-	/* Determine model based on API key type */
-	/* All models now use gemini-2.5-flash-native-audio-preview-09-2025 */
-	const char *model_name = GEMINI_MODEL;
-	if (str_isset(g_oairt.api_key) && 
-	    strncmp(g_oairt.api_key, "auth_tokens/", 12) == 0) {
-		/* Use same model for ephemeral tokens (as per working SDK example) */
-		model_name = GEMINI_MODEL_EPHEMERAL;
-	}
+	/* Use one Gemini model setting for both regular and ephemeral auth */
+	const char *model_name = str_isset(g_oairt.gemini_model) ? g_oairt.gemini_model : GEMINI_MODEL;
 	
 	/* Get temperature (default to 0.7 if not set) */
 	float temperature = g_oairt.temperature > 0.0f ? g_oairt.temperature : 0.7f;

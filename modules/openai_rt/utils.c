@@ -4,6 +4,9 @@
 #include "openai_rt.h"
 #include <re_base64.h>
 
+#define DEFAULT_OPENAI_MODEL "gpt-realtime"
+#define DEFAULT_GEMINI_MODEL "gemini-2.5-flash-native-audio-preview-09-2025"
+
 /* Base64 encoding wrapper for audio data */
 char *encode_audio_base64(const void *data, size_t len)
 {
@@ -187,6 +190,8 @@ int read_config(void)
     (void)conf_get_str(conf_cur(), "openai_rt_tool_calls",
                        g_oairt.enabled_tools, sizeof(g_oairt.enabled_tools));
     conf_get_str(conf_cur(), "openai_rt_backend", g_oairt.backend, sizeof(g_oairt.backend));
+    conf_get_str(conf_cur(), "openai_rt_openai_model", g_oairt.openai_model, sizeof(g_oairt.openai_model));
+    conf_get_str(conf_cur(), "openai_rt_gemini_model", g_oairt.gemini_model, sizeof(g_oairt.gemini_model));
     g_oairt.wait_for_greeting = true;
     conf_get_bool(conf_cur(), "openai_rt_wait_for_greeting", &g_oairt.wait_for_greeting);
     g_oairt.temperature = 0.7f;
@@ -221,6 +226,12 @@ int read_config(void)
     if (!str_isset(g_oairt.backend))
         str_ncpy(g_oairt.backend, "openai_realtime", sizeof(g_oairt.backend));
 
+    /* Set default model names if not configured */
+    if (!str_isset(g_oairt.openai_model))
+        str_ncpy(g_oairt.openai_model, DEFAULT_OPENAI_MODEL, sizeof(g_oairt.openai_model));
+    if (!str_isset(g_oairt.gemini_model))
+        str_ncpy(g_oairt.gemini_model, DEFAULT_GEMINI_MODEL, sizeof(g_oairt.gemini_model));
+
     /* Parse backend type */
     if (str_casecmp(g_oairt.backend, "openai_realtime") == 0) {
         g_oairt.backend_type = AI_BACKEND_OPENAI_REALTIME;
@@ -232,12 +243,14 @@ int read_config(void)
         str_ncpy(g_oairt.backend, "openai_realtime", sizeof(g_oairt.backend));
     }
 
-    DEBUG_INFO("Config loaded - Backend: %s, API key: %s, Prompt: %.50s%s, Tools: %s\n",
+    DEBUG_INFO("Config loaded - Backend: %s, API key: %s, Prompt: %.50s%s, Tools: %s, OpenAI model: %s, Gemini model: %s\n",
            g_oairt.backend,
            str_isset(g_oairt.api_key) ? "[CONFIGURED]" : "[MISSING]",
            g_oairt.prompt,
            str_len(g_oairt.prompt) > 50 ? "..." : "",
-           g_oairt.enabled_tools);
+           g_oairt.enabled_tools,
+           g_oairt.openai_model,
+           g_oairt.gemini_model);
 
     return 0;
 }

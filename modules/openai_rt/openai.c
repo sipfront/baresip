@@ -17,7 +17,8 @@
 /* OpenAI-specific configuration */
 #define OPENAI_API_HOST "api.openai.com"
 #define OPENAI_API_PORT 443
-#define OPENAI_API_PATH "/v1/realtime?model=gpt-realtime"
+#define OPENAI_API_PATH_BASE "/v1/realtime"
+#define OPENAI_MODEL_DEFAULT "gpt-realtime"
 
 /* Tool call definitions - centralized for consistency across implementations */
 const struct ai_tool_call AI_TOOL_HANGUP_CALL = {
@@ -171,6 +172,9 @@ static void openai_close(void)
 static int openai_get_connection_info(char *address, size_t address_len,
                                      int *port, char *path, size_t path_len)
 {
+	const char *model;
+	int n;
+
 	if (!address || !port || !path) {
 		return EINVAL;
 	}
@@ -181,11 +185,12 @@ static int openai_get_connection_info(char *address, size_t address_len,
 	str_ncpy(address, OPENAI_API_HOST, address_len);
 	
 	*port = OPENAI_API_PORT;
-	
-	if (path_len < strlen(OPENAI_API_PATH) + 1) {
+
+	model = str_isset(g_oairt.openai_model) ? g_oairt.openai_model : OPENAI_MODEL_DEFAULT;
+	n = re_snprintf(path, path_len, "%s?model=%s", OPENAI_API_PATH_BASE, model);
+	if (n < 0 || (size_t)n >= path_len) {
 		return EOVERFLOW;
 	}
-	str_ncpy(path, OPENAI_API_PATH, path_len);
 	
 	return 0;
 }

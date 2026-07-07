@@ -50,6 +50,8 @@ struct openai_rt {
     char prompt[4096];
     char enabled_tools[256];  /* Comma-separated list of enabled tool calls (e.g., "hangup_call,send_dtmf") */
     char backend[64];         /* AI backend selection: "openai_realtime" or "gemini_live" */
+    char openai_model[128];   /* OpenAI realtime model (default: gpt-realtime) */
+    char gemini_model[128];   /* Gemini model for both regular and ephemeral auth */
     enum ai_backend_type backend_type;  /* Parsed backend type */
     bool wait_for_greeting;
     float temperature;        /* Temperature for AI model generation (default 0.7) */
