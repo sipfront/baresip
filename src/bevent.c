@@ -454,20 +454,26 @@ static int add_codec_info(struct odict *od_parent, const struct call *call)
 				ac_rx = ac_sdp;
 		}
 		if (ac_tx) {
-			err |= odict_entry_add(od, "audio_tx", ODICT_STRING, ac_tx->name);
-			err |= odict_entry_add(od, "audio_tx_srate", ODICT_INT,
+			err |= odict_entry_add(od, "audio_tx",
+					       ODICT_STRING, ac_tx->name);
+			err |= odict_entry_add(od, "audio_tx_srate",
+					       ODICT_INT,
 					       (int64_t)ac_tx->srate);
-			err |= odict_entry_add(od, "audio_tx_channels", ODICT_INT,
+			err |= odict_entry_add(od, "audio_tx_channels",
+					       ODICT_INT,
 					       (int64_t)ac_tx->ch);
 			err |= odict_entry_add(od, "audio_tx_pt", ODICT_INT,
 					       (int64_t)stream_pt_enc(
-						       audio_strm(call_audio(call))));
+						audio_strm(call_audio(call))));
 		}
 		if (ac_rx) {
-			err |= odict_entry_add(od, "audio_rx", ODICT_STRING, ac_rx->name);
-			err |= odict_entry_add(od, "audio_rx_srate", ODICT_INT,
+			err |= odict_entry_add(od, "audio_rx",
+					       ODICT_STRING, ac_rx->name);
+			err |= odict_entry_add(od, "audio_rx_srate",
+					       ODICT_INT,
 					       (int64_t)ac_rx->srate);
-			err |= odict_entry_add(od, "audio_rx_channels", ODICT_INT,
+			err |= odict_entry_add(od, "audio_rx_channels",
+					       ODICT_INT,
 					       (int64_t)ac_rx->ch);
 			err |= odict_entry_add(od, "audio_rx_pt", ODICT_INT,
 					       (int64_t)audio_rx_payload_type(
@@ -491,19 +497,23 @@ static int add_codec_info(struct odict *od_parent, const struct call *call)
 				vc_rx = vc_sdp;
 		}
 		if (vc_tx) {
-			err |= odict_entry_add(od, "video_tx", ODICT_STRING, vc_tx->name);
+			err |= odict_entry_add(od, "video_tx",
+					       ODICT_STRING, vc_tx->name);
 			if (vc_tx->variant) {
-				err |= odict_entry_add(od, "video_tx_variant", ODICT_STRING,
+				err |= odict_entry_add(od, "video_tx_variant",
+						       ODICT_STRING,
 						       vc_tx->variant);
 			}
 			err |= odict_entry_add(od, "video_tx_pt", ODICT_INT,
 					       (int64_t)stream_pt_enc(
-						       video_strm(call_video(call))));
+						video_strm(call_video(call))));
 		}
 		if (vc_rx) {
-			err |= odict_entry_add(od, "video_rx", ODICT_STRING, vc_rx->name);
+			err |= odict_entry_add(od, "video_rx",
+					       ODICT_STRING, vc_rx->name);
 			if (vc_rx->variant) {
-				err |= odict_entry_add(od, "video_rx_variant", ODICT_STRING,
+				err |= odict_entry_add(od, "video_rx_variant",
+						       ODICT_STRING,
 						       vc_rx->variant);
 			}
 			err |= odict_entry_add(od, "video_rx_pt", ODICT_INT,

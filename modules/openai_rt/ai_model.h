@@ -22,12 +22,14 @@ struct openai_rt;
  * Tool Call Definition Structure
  *
  * Defines a tool call with its name, description, and parameters schema.
- * This ensures tool calls are named consistently across different AI model implementations.
+ * This ensures tool calls are named consistently across different AI
+ * model implementations.
  */
 struct ai_tool_call {
 	const char *name;           /* Tool call name (e.g., "hangup_call") */
 	const char *description;    /* Tool call description */
-	const char *parameters_json; /* JSON string defining parameters schema (NULL if no parameters) */
+	/* JSON string defining parameters schema (NULL if no parameters) */
+	const char *parameters_json;
 };
 
 /**
@@ -48,8 +50,10 @@ extern const size_t AI_AVAILABLE_TOOLS_COUNT;
 /**
  * Build tools JSON array for session update
  *
- * @param enabled_tools  Comma-separated list of enabled tool names (e.g., "hangup_call,send_dtmf")
- * @param tools_json     Output: JSON array string for tools (allocated, must be freed)
+ * @param enabled_tools  Comma-separated list of enabled tool names
+ *                       (e.g., "hangup_call,send_dtmf")
+ * @param tools_json     Output: JSON array string for tools
+ *                       (allocated, must be freed)
  * @return 0 if success, error code otherwise
  */
 int ai_model_build_tools_json(const char *enabled_tools, char **tools_json);
@@ -58,10 +62,12 @@ int ai_model_build_tools_json(const char *enabled_tools, char **tools_json);
  * Check if a tool name is enabled in the comma-separated list
  *
  * @param tool_name      Tool name to check (e.g., "hangup_call")
- * @param enabled_tools  Comma-separated list of enabled tool names (e.g., "hangup_call,send_dtmf")
+ * @param enabled_tools  Comma-separated list of enabled tool names
+ *                       (e.g., "hangup_call,send_dtmf")
  * @return true if tool is enabled, false otherwise
  */
-bool ai_model_is_tool_enabled(const char *tool_name, const char *enabled_tools);
+bool ai_model_is_tool_enabled(const char *tool_name,
+			      const char *enabled_tools);
 
 /**
  * AI Model Interface Structure
@@ -72,19 +78,19 @@ bool ai_model_is_tool_enabled(const char *tool_name, const char *enabled_tools);
 struct ai_model {
 	/* Configuration */
 	const char *name;
-	
+
 	/**
 	 * Initialize the AI model
 	 * @param ort  Module state
 	 * @return 0 on success, error code otherwise
 	 */
 	int (*init)(struct openai_rt *ort);
-	
+
 	/**
 	 * Clean up the AI model
 	 */
 	void (*close)(void);
-	
+
 	/**
 	 * Get connection information for WebSocket
 	 * @param address  Output: server address
@@ -95,8 +101,8 @@ struct ai_model {
 	 * @return 0 on success, error code otherwise
 	 */
 	int (*get_connection_info)(char *address, size_t address_len,
-	                           int *port, char *path, size_t path_len);
-	
+				   int *port, char *path, size_t path_len);
+
 	/**
 	 * Add authentication headers to WebSocket handshake
 	 * @param in  Buffer pointer (will be advanced)
@@ -104,42 +110,49 @@ struct ai_model {
 	 * @return 0 on success, -1 on error
 	 */
 	int (*add_auth_headers)(void *in, size_t len);
-	
+
 	/**
 	 * Build session setup message
 	 * @param prompt  System prompt/instructions
-	 * @param json_msg  Output: JSON message string (allocated, must be freed)
+	 * @param json_msg  Output: JSON message string
+	 *                  (allocated, must be freed)
 	 * @return 0 on success, error code otherwise
 	 */
 	int (*build_session_update)(const char *prompt, char **json_msg);
-	
+
 	/**
 	 * Build audio append message
 	 * @param base64_audio  Base64-encoded audio data
-	 * @param json_msg  Output: JSON message string (allocated, must be freed)
+	 * @param json_msg  Output: JSON message string
+	 *                  (allocated, must be freed)
 	 * @return 0 on success, error code otherwise
 	 */
 	int (*build_audio_append)(const char *base64_audio, char **json_msg);
-	
+
 	/**
 	 * Build response create message
 	 * @param instructions  Optional instructions for this response
-	 * @param json_msg  Output: JSON message string (allocated, must be freed)
+	 * @param json_msg  Output: JSON message string
+	 *                  (allocated, must be freed)
 	 * @return 0 on success, error code otherwise
 	 */
-	int (*build_response_create)(const char *instructions, char **json_msg);
-	
+	int (*build_response_create)(const char *instructions,
+				     char **json_msg);
+
 	/**
 	 * Build function call output message
 	 * @param call_id  Function call ID
 	 * @param name     Function name (required for Gemini toolResponse)
 	 * @param output  Function call output text
-	 * @param json_msg  Output: JSON message string (allocated, must be freed)
+	 * @param json_msg  Output: JSON message string
+	 *                  (allocated, must be freed)
 	 * @return 0 on success, error code otherwise
 	 */
-	int (*build_function_call_output)(const char *call_id, const char *name,
-	                                  const char *output, char **json_msg);
-	
+	int (*build_function_call_output)(const char *call_id,
+					  const char *name,
+					  const char *output,
+					  char **json_msg);
+
 	/**
 	 * Parse incoming message from AI model
 	 * @param json_str  JSON message string
@@ -152,15 +165,17 @@ struct ai_model {
 	 * @return 0 on success, error code otherwise
 	 */
 	int (*parse_message)(const char *json_str,
-	                     void (*audio_delta_cb)(const char *base64_audio, void *arg),
-	                     void (*session_updated_cb)(void *arg),
-	                     void (*speech_started_cb)(void *arg),
-	                     void (*function_call_cb)(const char *call_id,
-	                                             const char *name,
-	                                             const char *arguments,
-	                                             void *arg),
-	                     void (*response_done_cb)(const char *response_json, void *arg),
-	                     void *cb_arg);
+			     void (*audio_delta_cb)(const char *base64_audio,
+						    void *arg),
+			     void (*session_updated_cb)(void *arg),
+			     void (*speech_started_cb)(void *arg),
+			     void (*function_call_cb)(const char *call_id,
+						     const char *name,
+						     const char *arguments,
+						     void *arg),
+			     void (*response_done_cb)(
+				     const char *response_json, void *arg),
+			     void *cb_arg);
 };
 
 /* AI model implementations - exported from their respective files */
@@ -177,4 +192,3 @@ int ai_model_init(struct openai_rt *ort);
 void ai_model_close(void);
 
 #endif /* AI_MODEL_H */
-

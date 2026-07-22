@@ -30,23 +30,39 @@ ENDPOINT = f"{BASE_URL}/{API_VERSION}/auth_tokens"
 def main():
     # Check if API key is set
     if not API_KEY:
-        print("Error: GOOGLE_API_KEY environment variable is required.", file=sys.stderr)
-        print("Usage: export GOOGLE_API_KEY=\"your_api_key_here\" && python3 create_token.py", file=sys.stderr)
+        print(
+            "Error: GOOGLE_API_KEY environment variable is "
+            "required.",
+            file=sys.stderr,
+        )
+        print(
+            "Usage: export GOOGLE_API_KEY=\"your_api_key_here\" "
+            "&& python3 create_token.py",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    # Calculate expireTime (60 minutes from now) and newSessionExpireTime (1 minute from now)
-    # Format: YYYY-MM-DDTHH:MM:SS.ffffff+00:00 (with microseconds and timezone offset)
+    # expireTime: 60 minutes from now
+    # newSessionExpireTime: 1 minute from now
+    # Format: YYYY-MM-DDTHH:MM:SS.ffffff+00:00
+    # (with microseconds and timezone offset)
     now = datetime.now(timezone.utc)
-    expire_time = (now + timedelta(minutes=60)).strftime('%Y-%m-%dT%H:%M:%S.%f+00:00')
-    new_session_expire_time = (now + timedelta(minutes=1)).strftime('%Y-%m-%dT%H:%M:%S.%f+00:00')
+    fmt = '%Y-%m-%dT%H:%M:%S.%f+00:00'
+    expire_time = (now + timedelta(minutes=60)).strftime(fmt)
+    new_session_expire_time = (
+        now + timedelta(minutes=1)
+    ).strftime(fmt)
 
     # Manually construct JSON request body for easy visibility
-    # Request body matching working SDK format (NO bidiGenerateContentSetup field)
-    # The setup configuration is sent when using the token, not when creating it
+    # Request body matching working SDK format
+    # (NO bidiGenerateContentSetup field)
+    # Setup is sent when using the token, not when creating it
     request_body = (
         "{\n"
         '  "expireTime": "' + expire_time + '",\n'
-        '  "newSessionExpireTime": "' + new_session_expire_time + '",\n'
+        '  "newSessionExpireTime": "'
+        + new_session_expire_time
+        + '",\n'
         '  "uses": 1\n'
         "}"
     )
@@ -137,9 +153,13 @@ def main():
         try:
             import json
             response_data = json.loads(http_body)
-            # Extract the token (field name is 'name' or 'token')
-            token = response_data.get('name') or response_data.get('token') or None
-            
+            # Extract token (field name is 'name' or 'token')
+            token = (
+                response_data.get('name')
+                or response_data.get('token')
+                or None
+            )
+
             if not token or token == "null":
                 print("Error: Could not extract token.")
                 print(http_body)
@@ -149,8 +169,13 @@ def main():
             print()
             print(f"Token: {token}")
             print()
-            print("Run the python script with the token as command line argument:")
-            print(f'  ./modules/openai_rt/gemini-test.py "{token}"')
+            print(
+                "Run the python script with the token as "
+                "command line argument:"
+            )
+            print(
+                f'  ./modules/openai_rt/gemini-test.py "{token}"'
+            )
         except json.JSONDecodeError:
             print("Error: Could not parse response as JSON.")
             print(http_body)
@@ -163,5 +188,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

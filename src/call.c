@@ -96,30 +96,39 @@ struct call {
 
 	/**< Timestamp of first invite sent to calc stats */
 	uint64_t ts_invite_sent;
-	uint64_t ts_invite;           /**< INVITE sent (outgoing), for media stats */
-	uint64_t ts_early;            /**< First 183 Session Progress (outgoing)   */
-	uint64_t ts_established;      /**< 200 OK received (outgoing)              */
-	uint64_t ts_first_rtp;        /**< First incoming RTP (outgoing call)      */
+	/**< INVITE sent (outgoing), for media stats */
+	uint64_t ts_invite;
+	/**< First 183 Session Progress (outgoing) */
+	uint64_t ts_early;
+	/**< 200 OK received (outgoing) */
+	uint64_t ts_established;
+	/**< First incoming RTP (outgoing call) */
+	uint64_t ts_first_rtp;
 	uint64_t stat_pdd;
-	uint64_t stat_cst;            /**< INVITE to first incoming RTP [ms]       */
-	uint64_t stat_early_media;    /**< 183 to first incoming RTP [ms]          */
+	/**< INVITE to first incoming RTP [ms] */
+	uint64_t stat_cst;
+	/**< 183 to first incoming RTP [ms] */
+	uint64_t stat_early_media;
 	/**
 	 * Signed: first_rtp - established [ms]. Outgoing calls only.
 	 * Positive = RTP after 200, negative = RTP before 200 (early media /
 	 * premature send), zero = same jiffy.
 	 */
 	int64_t  stat_post_answer_media;
-	bool     stat_post_answer_set; /**< True once post_answer_media is known    */
-	bool     stat_media_emitted;   /**< CALL_STAT with cst/early_media sent    */
+	/**< True once post_answer_media is known */
+	bool     stat_post_answer_set;
+	/**< CALL_STAT with cst/early_media sent */
+	bool     stat_media_emitted;
 
-	char codec_state_fp[384]; /**< last emitted CALL_CODEC fingerprint   */
-	struct tmr tmr_codec;     /**< debounce rapid codec notifications    */
-	char codec_prm[32];        /**< param for debounced CALL_CODEC emit   */
-	unsigned codec_sdp_batch; /**< >0 during call_update_media only      */
-	uint64_t codec_postmedia_jfs; /**< tmr_jiffies: coalesce tail notifies */
-	struct tmr tmr_codec_rinv; /**< retry codec re-INVITE when SDP busy   */
-	char codec_rinv_spec[128]; /**< pending spec for tmr_codec_rinv       */
-	uint8_t codec_rinv_retry;  /**< retry count for deferred re-INVITE      */
+	char codec_state_fp[384]; /**< last emitted CALL_CODEC fingerprint */
+	struct tmr tmr_codec;     /**< debounce rapid codec notifications */
+	char codec_prm[32];       /**< param for debounced CALL_CODEC emit */
+	unsigned codec_sdp_batch; /**< >0 during call_update_media only */
+	/**< tmr_jiffies: coalesce tail notifies */
+	uint64_t codec_postmedia_jfs;
+	struct tmr tmr_codec_rinv; /**< retry codec re-INVITE when SDP busy */
+	char codec_rinv_spec[128]; /**< pending spec for tmr_codec_rinv */
+	uint8_t codec_rinv_retry;  /**< retry count for deferred re-INVITE */
 };
 
 
@@ -360,7 +369,7 @@ static void mnat_handler(int err, uint16_t scode, const char *reason,
 
 	case CALL_STATE_INCOMING:
 		call_event_handler(call, CALL_EVENT_INCOMING, "%s",
-                                   call->peer_uri);
+				   call->peer_uri);
 		break;
 
 	default:
@@ -747,9 +756,11 @@ static void call_build_codec_fp(struct call *call, char *buf, size_t sz)
 
 		(void)re_snprintf(p, left, "V:%s:%s|%s:%s|%d|%d",
 				  vc_tx ? vc_tx->name : "-",
-				  vc_tx && vc_tx->variant ? vc_tx->variant : "-",
+				  vc_tx && vc_tx->variant ?
+				  vc_tx->variant : "-",
 				  vc_rx ? vc_rx->name : "-",
-				  vc_rx && vc_rx->variant ? vc_rx->variant : "-",
+				  vc_rx && vc_rx->variant ?
+				  vc_rx->variant : "-",
 				  vptx,
 				  vprx);
 	}
@@ -822,7 +833,8 @@ static void call_codec_debounce_handler(void *arg)
 	(void)str_ncpy(call->codec_state_fp, fp, sizeof(call->codec_state_fp));
 
 	bevent_call_emit(UA_EVENT_CALL_CODEC, call, "%s",
-			 str_isset(call->codec_prm) ? call->codec_prm : "codec");
+			 str_isset(call->codec_prm) ?
+			 call->codec_prm : "codec");
 }
 
 
@@ -1636,7 +1648,8 @@ static int codec_reinvite_internal(struct call *call, const char *spec,
 	if (err)
 		return err;
 
-	(void)str_ncpy(call->codec_rinv_spec, spec, sizeof(call->codec_rinv_spec));
+	(void)str_ncpy(call->codec_rinv_spec, spec,
+		       sizeof(call->codec_rinv_spec));
 
 	if (!call_refresh_allowed(call)) {
 		enum sdp_neg_state neg_state = call_sdp_neg_state(call);
@@ -1653,8 +1666,8 @@ static int codec_reinvite_internal(struct call *call, const char *spec,
 		tmr_cancel(&call->tmr_codec_rinv);
 		tmr_start(&call->tmr_codec_rinv, 100, codec_rinv_retry_handler,
 			  call);
-		info("call: codec re-INVITE deferred (SDP negotiation not idle;"
-		     " state=%d)\n",
+		info("call: codec re-INVITE deferred "
+		     "(SDP negotiation not idle; state=%d)\n",
 		     neg_st);
 		return 0;
 	}
@@ -2367,11 +2380,13 @@ static int sipsess_offer_handler(struct mbuf **descp,
 		call->got_offer = true;
 
 		/*
-		 * Rebuild local audio codecs from account list plus any codec
-		 * from a prior "codec" command so we can answer peer re-INVITEs
-		 * with a matching payload (not only the last narrowed offer).
+		 * Rebuild local audio codecs from account list plus any
+		 * codec from a prior "codec" command so we can answer peer
+		 * re-INVITEs with a matching payload (not only the last
+		 * narrowed offer).
 		 */
-		if (call_state(call) == CALL_STATE_ESTABLISHED && call->audio) {
+		if (call_state(call) == CALL_STATE_ESTABLISHED &&
+		    call->audio) {
 			err = audio_sdp_peer_reinvite_merge(call->audio,
 							    call->acc);
 			if (err) {
@@ -2382,7 +2397,7 @@ static int sipsess_offer_handler(struct mbuf **descp,
 			}
 		}
 
-		/* Snapshot session before applying peer offer (for rollback) */
+		/* Snapshot session before peer offer (for rollback) */
 		err = sdp_encode(&sdp_prev, call->sdp, true);
 		if (err) {
 			warning("call: sdp_encode (pre re-INVITE): %m\n", err);
@@ -2398,7 +2413,7 @@ static int sipsess_offer_handler(struct mbuf **descp,
 			return err;
 		}
 
-		/* Reject before update_media so RTP/codec state stays unchanged */
+		/* Reject before update_media; keep RTP/codec unchanged */
 		if (!have_common_audio_codecs(call) &&
 		    !have_common_video_codecs(call)) {
 			info("call: no common audio or video codecs "
@@ -2406,8 +2421,8 @@ static int sipsess_offer_handler(struct mbuf **descp,
 			err = sdp_decode(call->sdp, sdp_prev, true);
 			mem_deref(sdp_prev);
 			if (err)
-				warning("call: SDP rollback after reject: %m\n",
-					err);
+				warning("call: SDP rollback after reject:"
+					" %m\n", err);
 			return ENOTSUP;
 		}
 
@@ -2471,7 +2486,7 @@ static int sipsess_answer_handler(const struct sip_msg *msg, void *arg)
 	    msg->scode >= 200 && msg->scode < 300 &&
 	    call_state(call) != CALL_STATE_ESTABLISHED)
 		call_event_handler(call, CALL_EVENT_ANSWERED, "%s",
-                                   call->peer_uri);
+				   call->peer_uri);
 
 	if (msg_ctype_cmp(&msg->ctyp, "multipart", "mixed"))
 		(void)sdp_decode_multipart(&msg->ctyp.params, msg->mb);
@@ -2535,7 +2550,7 @@ static void sipsess_estab_handler(const struct sip_msg *msg, void *arg)
 	if (call->outgoing && !call->ts_established)
 		call->ts_established = now;
 
-	/* RTP may already be flowing (183 early media or premature peer RTP) */
+	/* RTP may already flow (183 early media or premature peer RTP) */
 	call_on_established_media_stats(call);
 
 	if (call->got_offer)
@@ -2700,7 +2715,7 @@ static void xfer_cleanup(struct call *call, char *reason)
 	if (call->xcall->state == CALL_STATE_TRANSFER) {
 		set_state(call->xcall, CALL_STATE_ESTABLISHED);
 		call_event_handler(call->xcall, CALL_EVENT_TRANSFER_FAILED,
-                                   "%s", reason);
+				   "%s", reason);
 	}
 
 	call->xcall->xcall = NULL;
@@ -3012,7 +3027,7 @@ int call_accept(struct call *call, struct sipsess_sock *sess_sock,
 	call->estvdir = stream_ldir(video_strm(call_video(call)));
 	if (!call->acc->mnat)
 		call_event_handler(call, CALL_EVENT_INCOMING, "%s",
-                                   call->peer_uri);
+				   call->peer_uri);
 
 	return 0;
 }
@@ -3103,14 +3118,16 @@ static void sipsess_progr_handler(const struct sip_msg *msg, void *arg)
 	switch (msg->scode) {
 
 	case 180:
-		if (call_state(call) != CALL_STATE_EARLY && call_state(call) != CALL_STATE_RINGING) {
+		if (call_state(call) != CALL_STATE_EARLY &&
+		    call_state(call) != CALL_STATE_RINGING) {
 			send_pdd = true;
 		}
 		set_state(call, CALL_STATE_RINGING);
 		break;
 
 	case 183:
-		if (call_state(call) != CALL_STATE_EARLY && call_state(call) != CALL_STATE_RINGING) {
+		if (call_state(call) != CALL_STATE_EARLY &&
+		    call_state(call) != CALL_STATE_RINGING) {
 			send_pdd = true;
 		}
 		if (call->outgoing && !call->ts_early)
@@ -3122,14 +3139,14 @@ static void sipsess_progr_handler(const struct sip_msg *msg, void *arg)
 	if (media) {
 		mem_ref(call);
 		call_event_handler(call, CALL_EVENT_PROGRESS, "%s",
-                                   call->peer_uri);
+				   call->peer_uri);
 		mem_deref(call);
 	}
 	else if (call_state(call) != CALL_STATE_EARLY) {
 		call_stream_stop(call);
 		/* assuming ringing never has media */
 		call_event_handler(call, CALL_EVENT_RINGING, "%s",
-                                   call->peer_uri);
+				   call->peer_uri);
 	}
 
 	if (send_pdd && call->outgoing) {
