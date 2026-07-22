@@ -22,8 +22,9 @@ struct ai_model *get_ai_model(void)
 		return &gemini_model;
 	default:
 		/* Default to OpenAI if unknown */
-		warning("openai_rt: Unknown backend type %d, defaulting to OpenAI\n", 
-		        g_oairt.backend_type);
+		warning("openai_rt: Unknown backend type %d,"
+			" defaulting to OpenAI\n",
+			g_oairt.backend_type);
 		return &openai_model;
 	}
 }
@@ -32,13 +33,13 @@ struct ai_model *get_ai_model(void)
 int ai_model_init(struct openai_rt *ort)
 {
 	struct ai_model *model = get_ai_model();
-	
+
 	if (!model || !model->init) {
-		warning("openai_rt: AI model '%s' not available\n", 
+		warning("openai_rt: AI model '%s' not available\n",
 		        model ? model->name : "unknown");
 		return EINVAL;
 	}
-	
+
 	info("openai_rt: Initializing AI model: %s\n", model->name);
 	return model->init(ort);
 }
@@ -47,7 +48,7 @@ int ai_model_init(struct openai_rt *ort)
 void ai_model_close(void)
 {
 	struct ai_model *model = get_ai_model();
-	
+
 	if (model && model->close) {
 		info("openai_rt: Closing AI model: %s\n", model->name);
 		model->close();
