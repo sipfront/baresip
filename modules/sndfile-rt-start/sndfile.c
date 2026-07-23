@@ -19,7 +19,7 @@ enum {
 
 
 /**
- * @defgroup sndfile-rt-start sndfile-rt-start	
+ * @defgroup sndfile-rt-start sndfile-rt-start
  *
  * Audio filter that writes audio samples to WAV-file
  *
@@ -69,7 +69,8 @@ static inline uint64_t now_usec_monotonic(void)
 	struct timespec ts;
 	if (0 != clock_gettime(CLOCK_MONOTONIC, &ts))
 		return 0;
-	return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+	return (uint64_t)ts.tv_sec * 1000000ULL +
+		(uint64_t)ts.tv_nsec / 1000ULL;
 }
 
 static size_t bytes_per_sample(enum aufmt fmt)
@@ -145,7 +146,8 @@ static uint64_t pacing_silence_for_gap(uint64_t gap, uint32_t srate)
 	if (!gap || !srate)
 		return 0;
 
-	cap_samp = ((uint64_t)dump_wallclock_max_silence_ms * (uint64_t)srate) /
+	cap_samp = ((uint64_t)dump_wallclock_max_silence_ms *
+		    (uint64_t)srate) /
 		   1000ULL;
 	if (!cap_samp)
 		return gap;

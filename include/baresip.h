@@ -939,7 +939,7 @@ enum ua_event {
 	UA_EVENT_CALL_DTMF_POUND,
 	UA_EVENT_CALL_DTMF_END,
 	UA_EVENT_CALL_RTPESTAB,
-	UA_EVENT_CALL_CODEC,          /**< negotiated codecs (param: media name) */
+	UA_EVENT_CALL_CODEC, /**< negotiated codecs (param: media name) */
 	UA_EVENT_CALL_RTCP,
 	UA_EVENT_CALL_MENC,
 	UA_EVENT_VU_TX,
@@ -962,7 +962,7 @@ enum ua_event {
 	UA_EVENT_CALL_ENDED_LOCAL,
 	UA_EVENT_CALL_ENDED_REMOTE,
 	UA_EVENT_CALL_STAT,
-	
+
 	UA_EVENT_OPENAI_RESPONSE,
 
 	UA_EVENT_AUDIO_LATENCY_OUTGOING,  /**< Tone sent on encoder side */
@@ -1378,7 +1378,7 @@ typedef int(viddec_update_h)(struct viddec_state **vdsp,
 			     const struct video *vid);
 
 typedef int (viddec_decode_h)(struct viddec_state *vds, struct vidframe *frame,
-                              struct viddec_packet *pkt);
+			      struct viddec_packet *pkt);
 
 struct vidcodec {
 	struct le le;
