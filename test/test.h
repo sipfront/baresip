@@ -243,6 +243,7 @@ int test_jbuf_adaptive_video(void);
 int test_message(void);
 int test_network(void);
 int test_play(void);
+int test_sdes_crypto_padding(void);
 int test_stunuri(void);
 int test_ua_alloc(void);
 int test_ua_options(void);

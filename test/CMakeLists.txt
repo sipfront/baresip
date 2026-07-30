@@ -19,6 +19,7 @@ add_executable(${PROJECT_NAME}
   message.c
   net.c
   play.c
+  sdes.c
   stunuri.c
   ua.c
   video.c
@@ -44,5 +45,9 @@ add_executable(${PROJECT_NAME}
 
   main.c
 )
+
+if(NOT STATIC)
+  target_sources(${PROJECT_NAME} PRIVATE ../modules/srtp/sdes.c)
+endif()
 
 target_link_libraries(${PROJECT_NAME} baresip ${REM_LIBRARIES} ${RE_LIBRARIES})
