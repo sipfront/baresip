@@ -293,7 +293,16 @@ out:
 }
 
 
-/* a=crypto:<tag> <crypto-suite> <key-params> [<session-params>] */
+/**
+ * Encodes the local SRTP key in an SDP crypto attribute.
+ *
+ * @param st    Media encryption state containing the local key.
+ * @param m     SDP media object that receives the crypto attribute.
+ * @param tag   Crypto attribute tag.
+ * @param suite SRTP crypto suite name.
+ *
+ * @return 0 on success, otherwise an error code.
+ */
 static int sdp_enc(struct menc_st *st, struct sdp_media *m,
 		   uint32_t tag, const char *suite)
 {
@@ -303,8 +312,7 @@ static int sdp_enc(struct menc_st *st, struct sdp_media *m,
 
 	len = get_master_keylen(resolve_suite(suite));
 
-	olen = sizeof(key);
-	err = base64_encode(st->key_tx, len, key, &olen);
+	err = sdes_encode_key(key, sizeof(key), st->key_tx, len, &olen);
 	if (err)
 		return err;
 
