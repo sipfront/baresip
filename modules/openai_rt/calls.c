@@ -626,6 +626,7 @@ int calls_api_call(const char *method, const char *uri,
 	struct api_call_data ad;
 	struct pl pl_met, pl_uri;
 	struct mbuf *mb_body = NULL;
+	bool mtx_ok = false, cnd_ok = false;
 	int err;
 
 	if (!method || !uri || !output) return EINVAL;
@@ -638,13 +639,16 @@ int calls_api_call(const char *method, const char *uri,
 	memset(&sync, 0, sizeof(sync));
 	ad.output = output;
 
-	err = mtx_init(&sync.mtx, mtx_plain) != thrd_success;
-	if (err) goto out;
-	err = cnd_init(&sync.cnd) != thrd_success;
-	if (err) {
-		mtx_destroy(&sync.mtx);
+	if (mtx_init(&sync.mtx, mtx_plain) != thrd_success) {
+		err = ENOMEM;
 		goto out;
 	}
+	mtx_ok = true;
+	if (cnd_init(&sync.cnd) != thrd_success) {
+		err = ENOMEM;
+		goto out;
+	}
+	cnd_ok = true;
 	sync.done = false;
 	ad.sync = &sync;
 
@@ -778,8 +782,10 @@ out:
 	mem_deref(conn);
 	mem_deref(cli);
 	mem_deref(mb_body);
-	mtx_destroy(&sync.mtx);
-	cnd_destroy(&sync.cnd);
+	if (cnd_ok)
+		cnd_destroy(&sync.cnd);
+	if (mtx_ok)
+		mtx_destroy(&sync.mtx);
 
 	re_thread_leave();
 
