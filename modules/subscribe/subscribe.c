@@ -22,16 +22,13 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 	(void)event;
 	(void)arg;
 	if (ev == UA_EVENT_SHUTDOWN) {
-		struct le *le;
-		for (le = subl.head; le; le = le->next) {
-			struct subscription *sub = le->data;
-			if (sub->sub){
-				sub_destructor(sub);
-				sub->sub = NULL;
-				sub->ua = NULL;
-
-			}
-		}
+		/* Tear down all active subscriptions safely. list_flush
+		 * unlinks and frees each element (sub_destructor releases
+		 * sub->sub and sub->ua), advancing to the saved next
+		 * pointer internally so a freed element is never
+		 * dereferenced -- unlike the previous hand-rolled loop,
+		 * which touched le->next and sub after freeing them. */
+		list_flush(&subl);
 	}
 }
 
@@ -178,11 +175,25 @@ static int cmd_subscribe(struct re_printf *pf, void *arg)
 	size_t pos = 0;
 	for (le = ua_custom_hdrs(ua)->head; le; le = le->next) {
 		struct sip_hdr *hdr = le->data;
+		int n;
 		if (!hdr) continue;
-		pos += snprintf(hdrstr + pos, sizeof(hdrstr) - pos,
-						"%.*s: %.*s\r\n",
-						(int)hdr->name.l, hdr->name.p,
-						(int)hdr->val.l, hdr->val.p);
+		/* Stop once the buffer is full; leave room for the
+		 * terminating NUL. */
+		if (pos >= sizeof(hdrstr) - 1)
+			break;
+		n = snprintf(hdrstr + pos, sizeof(hdrstr) - pos,
+			     "%.*s: %.*s\r\n",
+			     (int)hdr->name.l, hdr->name.p,
+			     (int)hdr->val.l, hdr->val.p);
+		if (n < 0)
+			break;
+		/* snprintf returns the length it WOULD have written; on
+		 * truncation clamp to the buffer end and stop. */
+		if ((size_t)n >= sizeof(hdrstr) - pos) {
+			pos = sizeof(hdrstr) - 1;
+			break;
+		}
+		pos += (size_t)n;
 	}
 	hdrstr[pos] = '\0';  /* ensure null-terminated */
 
