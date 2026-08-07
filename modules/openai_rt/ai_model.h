@@ -40,8 +40,7 @@ extern const struct ai_tool_call AI_TOOL_HANGUP_CALL;
 extern const struct ai_tool_call AI_TOOL_SEND_DTMF;
 extern const struct ai_tool_call AI_TOOL_API_CALL;
 extern const struct ai_tool_call AI_TOOL_TRANSFER_CALL;
-extern const struct ai_tool_call AI_TOOL_RECORD_CONFIRMATION_NUMBER;
-extern const struct ai_tool_call AI_TOOL_RECORD_QUOTED_PRICE;
+extern const struct ai_tool_call AI_TOOL_RECORD_EVENT;
 
 /* Array of all available tool calls */
 extern const struct ai_tool_call *AI_AVAILABLE_TOOLS[];

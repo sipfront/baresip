@@ -630,14 +630,33 @@ static void execute_tool_call(const char *call_id, const char *name,
 		}
 		json_object_put(args_obj);
 	}
-	else if (strcmp(name, AI_TOOL_RECORD_CONFIRMATION_NUMBER.name) == 0 ||
-	         strcmp(name, AI_TOOL_RECORD_QUOTED_PRICE.name) == 0) {
-		/* Observable-action tools: capture what the simulated caller heard into the
-		 * conversation trace for the downstream task evaluator. No side effect on the
-		 * call -- just record the arguments and acknowledge. */
-		DEBUG_INFO("openai_rt: Recording observable action '%s'\n", name);
-		trace_add_toolcall(name, arguments);
-		send_function_call_output(call_id, name, "Recorded");
+	else if (strcmp(name, AI_TOOL_RECORD_EVENT.name) == 0) {
+		/* General-purpose observable-event tool: capture a specific fact the simulated
+		 * caller heard into the conversation trace for the downstream task evaluator.
+		 * No side effect on the call -- record under the caller-supplied label (with the
+		 * full arguments as payload) and acknowledge. */
+		struct json_object *args_obj = json_tokener_parse(arguments);
+		struct json_object *label_obj = NULL;
+		const char *label = NULL;
+
+		if (args_obj &&
+		    json_object_object_get_ex(args_obj, "label", &label_obj))
+			label = json_object_get_string(label_obj);
+
+		if (label && *label) {
+			DEBUG_INFO("openai_rt: Recording event '%s'\n", label);
+			trace_add_toolcall(label, arguments);
+			send_function_call_output(call_id, name, "Recorded");
+		}
+		else {
+			warning("openai_rt: record_event missing 'label'\n");
+			send_function_call_output(call_id, name,
+			                          "Error: Missing 'label' parameter");
+		}
+
+		if (args_obj)
+			json_object_put(args_obj);
+
 		if (g_oairt.backend_type == AI_BACKEND_OPENAI_REALTIME) {
 			send_response_create();
 		}

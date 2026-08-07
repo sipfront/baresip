@@ -8,8 +8,10 @@
   (gated by the new `openai_rt_transcribe` flag) and parse the transcript events into the
   trace. Role mapping: **CALLER** = our simulated user (model output), **AGENT** = the voice
   bot under test (model input transcription).
-- New **observable-action tools** (`record_confirmation_number`, `record_quoted_price`) that
-  let the simulated caller record what it heard; captured into the trace and acknowledged.
+- New general-purpose **observable-event tool** (`record_event`, taking a `label` + `value`)
+  that lets the simulated caller record any specific fact it heard (confirmation number,
+  quoted price, appointment time, ...); captured into the trace under its label and
+  acknowledged.
 - New config keys: `openai_rt_transcribe` (bool, default off), `openai_rt_trace_dir` (where
   the trace file is written).
 - Build: `trace.c` added to `CMakeLists.txt`. Testing guide in

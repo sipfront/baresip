@@ -104,40 +104,31 @@ const struct ai_tool_call AI_TOOL_TRANSFER_CALL = {
 		"}"
 };
 
-/* Observable-action tools: let the simulated caller record what it heard so the
- * downstream task evaluator can verify outcomes structurally (not just from the
- * transcript). They perform no side effect on the call -- the arguments are captured
- * into the conversation trace and acknowledged. Enabled only when named in
- * openai_rt_tool_calls. */
-const struct ai_tool_call AI_TOOL_RECORD_CONFIRMATION_NUMBER = {
-	.name = "record_confirmation_number",
-	.description = "Record a confirmation, reference, or case number the agent provided",
+/* General-purpose observable-event tool: lets the simulated caller record any specific
+ * fact or value it heard (a confirmation number, a quoted price, an appointment time,
+ * ...) into the conversation trace so the downstream task evaluator can verify outcomes
+ * structurally, not just from the transcript. Performs no side effect on the call -- the
+ * event is captured under its caller-supplied label and acknowledged. Enabled only when
+ * named in openai_rt_tool_calls. */
+const struct ai_tool_call AI_TOOL_RECORD_EVENT = {
+	.name = "record_event",
+	.description = "Record a specific fact or event stated during the call (e.g. a "
+		"confirmation/reference number, a quoted price, an appointment time) so the "
+		"test can verify it. Provide a short, stable label describing what the value is.",
 	.parameters_json =
 		"{"
 			"\"type\": \"object\","
 			"\"properties\": {"
+				"\"label\": {"
+					"\"type\": \"string\","
+					"\"description\": \"Short snake_case identifier of what is being recorded (e.g. 'confirmation_number', 'quoted_price', 'appointment_time')\""
+				"},"
 				"\"value\": {"
 					"\"type\": \"string\","
-					"\"description\": \"The confirmation/reference/case number exactly as stated by the agent\""
+					"\"description\": \"The value exactly as stated by the agent (include units/currency where relevant)\""
 				"}"
 			"},"
-			"\"required\": [\"value\"]"
-		"}"
-};
-
-const struct ai_tool_call AI_TOOL_RECORD_QUOTED_PRICE = {
-	.name = "record_quoted_price",
-	.description = "Record a price, amount, or fee the agent quoted",
-	.parameters_json =
-		"{"
-			"\"type\": \"object\","
-			"\"properties\": {"
-				"\"value\": {"
-					"\"type\": \"string\","
-					"\"description\": \"The price/amount exactly as stated by the agent (include currency)\""
-				"}"
-			"},"
-			"\"required\": [\"value\"]"
+			"\"required\": [\"label\", \"value\"]"
 		"}"
 };
 
@@ -147,12 +138,11 @@ const struct ai_tool_call *AI_AVAILABLE_TOOLS[] = {
 	&AI_TOOL_SEND_DTMF,
 	&AI_TOOL_API_CALL,
 	&AI_TOOL_TRANSFER_CALL,
-	&AI_TOOL_RECORD_CONFIRMATION_NUMBER,
-	&AI_TOOL_RECORD_QUOTED_PRICE,
+	&AI_TOOL_RECORD_EVENT,
 	NULL  /* Sentinel */
 };
 
-const size_t AI_AVAILABLE_TOOLS_COUNT = 6;
+const size_t AI_AVAILABLE_TOOLS_COUNT = 5;
 
 /* Forward declarations */
 static int openai_init(struct openai_rt *ort);

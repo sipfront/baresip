@@ -14,7 +14,7 @@ completion and turn-taking.
 | File | Change |
 |---|---|
 | `trace.c`, `trace.h` (new) | Self-contained, mutex-guarded trace store: turns, observable tool-calls, events; serializes to `conversation-trace.json`. |
-| `openai.c` | `input_audio_transcription` added to the session update (gated by `openai_rt_transcribe`); parse branches for `conversation.item.input_audio_transcription.completed` → **OTHER** and `response.output_audio_transcript.done` / `response.audio_transcript.done` → **SELF**. New observable-action tool defs (`record_confirmation_number`, `record_quoted_price`). |
+| `openai.c` | `input_audio_transcription` added to the session update (gated by `openai_rt_transcribe`); parse branches for `conversation.item.input_audio_transcription.completed` → **OTHER** and `response.output_audio_transcript.done` / `response.audio_transcript.done` → **SELF**. New general-purpose observable-event tool def (`record_event`, with `label` + `value`). |
 | `gemini.c` | `inputAudioTranscription` + `outputAudioTranscription` added to setup (gated), with `responseModalities` kept AUDIO-only. Parses `serverContent.inputTranscription.text` → **OTHER** and `outputTranscription.text` → **SELF**. Streamed fragments are coalesced by `trace.c`. (Note: `outputAudioTranscription` previously correlated with a turn-taking regression; re-enabled per request — re-test that the caller still yields.) |
 | `websocket.c` | `handle_function_call_cb` records observable-action tool-calls into the trace and acks them; `handle_speech_started_cb` records a `speech_started` event. |
 | `calls.c` | `trace_reset()` on `UA_EVENT_CALL_ESTABLISHED`; `trace_write_file()` on `UA_EVENT_CALL_CLOSED`. |
@@ -67,11 +67,11 @@ libre symbol availability (`json_object_to_json_string_ext`, `fs_fopen`, `fs_isd
    ```
    openai_rt_transcribe   yes
    openai_rt_trace_dir    /tmp/sf-trace
-   openai_rt_tool_calls   "hangup_call,record_confirmation_number,record_quoted_price"
+   openai_rt_tool_calls   "hangup_call,record_event"
    ```
    (`mkdir -p /tmp/sf-trace` first.)
 2. Give it a task-style prompt that instructs the simulated caller to, e.g., confirm a price
-   and call `record_quoted_price` when the agent states one.
+   and call `record_event` with `label: "quoted_price"` when the agent states one.
 3. Place a call to a real voice bot and let a short conversation happen; hang up.
 4. Verify `/tmp/sf-trace/conversation-trace.json` was written and looks like:
    ```json
@@ -83,7 +83,7 @@ libre symbol availability (`json_object_to_json_string_ext`, `fs_fopen`, `fs_isd
        { "role": "OTHER", "speaker": "OTHER", "text": "Sure, that is ...", "ts_ms": 3800 }
      ],
      "observable_actions": [
-       { "name": "record_quoted_price", "arguments": { "value": "$40" }, "ts_ms": 15200 }
+       { "name": "quoted_price", "arguments": { "label": "quoted_price", "value": "$40" }, "ts_ms": 15200 }
      ],
      "events": [ { "kind": "speech_started", "ts_ms": 8100 } ]
    }
