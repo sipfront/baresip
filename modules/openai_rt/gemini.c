@@ -410,8 +410,8 @@ static int gemini_build_session_update(const char *prompt, char **json_msg)
 		? g_oairt.temperature : 0.7f;
 
 	/* Get voice name (default to "Aoede" if not set) */
-	const char *voice_name = str_isset(
-		g_oairt.voice) ? g_oairt.voice : "Aoede");
+	const char *voice_name = str_isset(g_oairt.voice)
+		? g_oairt.voice : "Aoede";
 
 	/* Build VAD config JSON if enabled */
 	char *vad_json = NULL;
@@ -550,8 +550,8 @@ static int gemini_build_response_create(const char *instructions,
 		return EINVAL;
 	}
 
-	const char *text_content = (
-		instructions && *instructions) ? instructions : "Hello");
+	const char *text_content = (instructions && *instructions)
+		? instructions : "Hello";
 
 	/* Escape JSON special characters */
 	err = json_escape(&escaped_text, text_content);
