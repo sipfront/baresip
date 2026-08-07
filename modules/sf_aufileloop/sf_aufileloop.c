@@ -1,9 +1,10 @@
 /**
  * @file sf_aufileloop.c Gapless looping audio source for Sipfront.
  *
- * This module intentionally lives outside the Baresip source tree. It is built
- * through Baresip's APP_MODULES hook so it tracks the exact Baresip/libre ABI in
- * sipfront-agent-base without carrying a source patch against modules/aufile.
+ * This module intentionally lives outside the Baresip source tree. It is
+ * built through Baresip's APP_MODULES hook so it tracks the exact
+ * Baresip/libre ABI in sipfront-agent-base without carrying a source patch
+ * against modules/aufile.
  */
 #include <errno.h>
 #include <limits.h>
@@ -361,7 +362,8 @@ static int append_resampled_frame(struct ausrc_st *st,
 	if (out_frames64 <= 0 || out_frames64 > INT_MAX)
 		return EINVAL;
 
-	err = output_need((size_t)out_frames64, st->prm.ch, st->samplec, &need);
+	err = output_need((size_t)out_frames64, st->prm.ch, st->samplec,
+			  &need);
 	if (err)
 		return err;
 
@@ -542,7 +544,8 @@ static int open_audio_stream(AVFormatContext **fmtp, AVCodecContext **decp,
 
 	ret = avformat_find_stream_info(fmt, NULL);
 	if (ret < 0) {
-		warning_av_error("failed to read media stream info", path, ret);
+		warning_av_error("failed to read media stream info", path,
+				 ret);
 		err = av_error_to_errno(ret);
 		goto out;
 	}
@@ -565,7 +568,8 @@ static int open_audio_stream(AVFormatContext **fmtp, AVCodecContext **decp,
 	ret = avcodec_parameters_to_context(dec,
 			fmt->streams[stream_index]->codecpar);
 	if (ret < 0) {
-		warning_av_error("failed to copy decoder parameters", path, ret);
+		warning_av_error("failed to copy decoder parameters", path,
+				 ret);
 		err = av_error_to_errno(ret);
 		goto out;
 	}
@@ -592,7 +596,8 @@ out:
 /**
  * Decode a complete MP3/WAV file into the target Baresip PCM format.
  *
- * All decoding, resampling, and remixing happens once during source allocation.
+ * All decoding, resampling, and remixing happens once during source
+ * allocation.
  * The source thread later loops by copying from this prepared PCM buffer.
  *
  * @param st   Source state receiving prepared PCM samples.
@@ -629,8 +634,8 @@ static int decode_media_file(struct ausrc_st *st, const char *path)
 		if (ret == AVERROR_EOF)
 			break;
 		if (ret < 0) {
-			warning_av_error("failed while reading media file", path,
-					 ret);
+			warning_av_error("failed while reading media file",
+					 path, ret);
 			err = av_error_to_errno(ret);
 			goto out;
 		}
@@ -677,9 +682,9 @@ out:
 /**
  * Fill one outgoing audio frame from the prepared PCM buffer.
  *
- * If the requested frame crosses the end of the decoded file, copying continues
- * from sample zero. That makes the loop gapless and avoids notifying Baresip of
- * EOF.
+ * If the requested frame crosses the end of the decoded file, copying
+ * continues from sample zero. That makes the loop gapless and avoids
+ * notifying Baresip of EOF.
  *
  * @param st  Source state containing decoded samples and the current cursor.
  * @param dst Destination buffer with room for st->frame_sampc samples.
@@ -756,8 +761,8 @@ static int src_thread(void *arg)
  * Build the target source format for this Baresip source instance.
  *
  * When the source is switched by `/ausrc`, Baresip may pass the previous
- * source's parameters. The active transmit codec, when available from the audio
- * callback context, is the authoritative target for source frames.
+ * source's parameters. The active transmit codec, when available from the
+ * audio callback context, is the authoritative target for source frames.
  *
  * @param target Receives the source format this module should emit.
  * @param prm    Baresip source parameters passed to source_alloc().
@@ -802,10 +807,10 @@ static int target_prm(struct ausrc_prm *target, const struct ausrc_prm *prm,
 /**
  * Allocate a looping audio source instance.
  *
- * Baresip calls this through the ausrc API when `sf_aufileloop` is selected as
- * the active audio source. The function decodes MP3/WAV input once, converts it
- * to the active transmit codec's sample rate and channel count, and starts the
- * source thread if a read handler was supplied.
+ * Baresip calls this through the ausrc API when `sf_aufileloop` is selected
+ * as the active audio source. The function decodes MP3/WAV input once,
+ * converts it to the active transmit codec's sample rate and channel count,
+ * and starts the source thread if a read handler was supplied.
  *
  * @param stp  Receives the allocated source state on success.
  * @param as   Registered audio source descriptor.

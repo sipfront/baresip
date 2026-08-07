@@ -409,7 +409,7 @@ int audio_sdp_peer_reinvite_merge(struct audio *a, const struct account *acc)
 	if (!a || !acc)
 		return EINVAL;
 
-	/* list_append() requires le->list == NULL; stack leb[] must be zeroed */
+	/* list_append needs le->list == NULL; stack leb[] must be zeroed */
 	memset(leb, 0, sizeof(leb));
 
 	list_init(&merged);
@@ -771,10 +771,12 @@ void call_emit_send_dtmf(const struct audio *au, char key)
 		bevent_call_emit(UA_EVENT_CALL_SEND_DTMF_D, call, "%c", key);
 	}
 	else if (key == '*') {
-		bevent_call_emit(UA_EVENT_CALL_SEND_DTMF_ASTERISK, call, "%c", key);
+		bevent_call_emit(UA_EVENT_CALL_SEND_DTMF_ASTERISK, call,
+				 "%c", key);
 	}
 	else if (key == '#') {
-		bevent_call_emit(UA_EVENT_CALL_SEND_DTMF_POUND, call, "%c", key);
+		bevent_call_emit(UA_EVENT_CALL_SEND_DTMF_POUND, call,
+				 "%c", key);
 	}
 	bevent_call_emit(UA_EVENT_CALL_SEND_DTMF_END, call, "%c", key);
 }
@@ -867,7 +869,8 @@ static void handle_telev(struct audio *a, struct mbuf *mb)
 
 static void audio_flush_tx_filt(struct audio *a);
 static int audio_decoder_set_ex(struct audio *a, const struct aucodec *ac,
-				int pt, const char *params, bool flush_tx_chain);
+				int pt, const char *params,
+				bool flush_tx_chain);
 
 
 static int stream_pt_handler(uint8_t pt, struct mbuf *mb, void *arg)
@@ -1464,7 +1467,7 @@ int audio_update(struct audio *a)
 		return 0;
 	}
 
-	/* Drop buffered TX audio when receive stops (e.g. hold); must run before
+	/* Drop buffered TX audio when receive stops (e.g. hold); run before
 	 * aufilt_setup so encode filters are reattached afterwards. */
 	if (!(dir & SDP_RECVONLY))
 		audio_flush_tx_filt(a);
@@ -1696,7 +1699,8 @@ int audio_decoder_set(struct audio *a, const struct aucodec *ac,
 
 
 static int audio_decoder_set_ex(struct audio *a, const struct aucodec *ac,
-				int pt, const char *params, bool flush_tx_chain)
+				int pt, const char *params,
+				bool flush_tx_chain)
 {
 	struct list *aufiltl = baresip_aufiltl();
 	int err = 0;
@@ -2075,7 +2079,7 @@ int audio_set_source(struct audio *au, const char *mod, const char *device)
 
 	if (str_isset(mod)) {
 
-		/* Persist source selection so codec changes/restarts reuse it */
+		/* Persist source so codec changes/restarts reuse it */
 		tx->module = mem_deref(tx->module);
 		tx->device = mem_deref(tx->device);
 		err  = str_dup(&tx->module, mod);

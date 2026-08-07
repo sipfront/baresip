@@ -15,26 +15,26 @@
 
 /* WebSocket states */
 enum ws_state {
-    WS_DISCONNECTED,
-    WS_CONNECTING,
-    WS_CONNECTED,
-    WS_DISCONNECTING
+	WS_DISCONNECTED,
+	WS_CONNECTING,
+	WS_CONNECTED,
+	WS_DISCONNECTING
 };
 
 /* Message types for WebSocket communication */
 enum ws_msg_type {
-    WS_MSG_TO_OPENAI,    /* Messages to send to OpenAI */
-    WS_MSG_FROM_OPENAI   /* Messages received from OpenAI */
+	WS_MSG_TO_OPENAI,    /* Messages to send to OpenAI */
+	WS_MSG_FROM_OPENAI   /* Messages received from OpenAI */
 };
 
 /* WebSocket message structure */
 struct ws_message {
-    struct le le;
-    enum ws_msg_type type;
-    uint8_t *data;
-    size_t len;
-    void (*callback)(void *arg, int err);
-    void *arg;
+	struct le le;
+	enum ws_msg_type type;
+	uint8_t *data;
+	size_t len;
+	void (*callback)(void *arg, int err);
+	void *arg;
 };
 
 /* AI Backend types */
@@ -45,54 +45,65 @@ enum ai_backend_type {
 
 /* Global module state */
 struct openai_rt {
-    /* Configuration */
-    char api_key[256];
-    char prompt[4096];
-    char enabled_tools[256];  /* Comma-separated list of enabled tool calls (e.g., "hangup_call,send_dtmf") */
-    char backend[64];         /* AI backend selection: "openai_realtime" or "gemini_live" */
-    char openai_model[128];   /* OpenAI realtime model (default: gpt-realtime) */
-    char gemini_model[128];   /* Gemini model for both regular and ephemeral auth */
-    enum ai_backend_type backend_type;  /* Parsed backend type */
-    bool wait_for_greeting;
-    float temperature;        /* Temperature for AI model generation (default 0.7) */
-    char voice[64];           /* Voice name for Gemini (e.g., "Aoede") */
-    /* Conversation-trace capture (task-based voicebot assessment; default off) */
-    bool transcribe;          /* enable input-audio transcription + conversation trace */
-    char trace_dir[512];      /* dir to write conversation-trace.json (agent's artifacts dir) */
-    /* Gemini VAD config */
-    bool gemini_vad_enabled;
-    char gemini_vad_start_sensitivity[64];
-    int gemini_vad_silence_duration_ms;
-    int gemini_vad_prefix_padding_ms;
-    /* Call state */
-    bool call_active;
-    struct call *current_call;
-    bool session_cfg_applied;   /* set after we see type=session.updated */
-    bool gemini_xfer_scheduled; /* Gemini: transfer already scheduled */
-    bool gemini_turn_had_audio; /* Gemini: model audio in current turn */
-    
-    /* WebSocket state */
-    enum ws_state ws_state;
-    struct lws_context *ws_context;
-    struct lws *ws_client;
-    bool session_ready;
-    bool setup_sent;            /* Gemini setup queued for current WS connection */
-    bool speech_active;
-    bool conversation_kick_pending;
-    
-    /* WebSocket thread */
-    pthread_t ws_thread;
-    bool ws_thread_running;
-    pthread_mutex_t ws_mutex;
-    pthread_cond_t ws_cond;
-    
-    /* Message queues */
-    struct list to_openai_queue;    /* Messages to send to OpenAI */
-    struct list from_openai_queue;  /* Messages received from OpenAI */
-    
-    /* Audio state */
-    struct ausrc *ausrc;
-    struct auplay *auplay;
+	/* Configuration */
+	char api_key[256];
+	char prompt[4096];
+	/* Comma-separated list of enabled tool calls
+	 * (e.g., "hangup_call,send_dtmf") */
+	char enabled_tools[256];
+	/* AI backend: "openai_realtime" or "gemini_live" */
+	char backend[64];
+	/* OpenAI realtime model (default: gpt-realtime) */
+	char openai_model[128];
+	/* Gemini model for both regular and ephemeral auth */
+	char gemini_model[128];
+	/* Parsed backend type */
+	enum ai_backend_type backend_type;
+	bool wait_for_greeting;
+	/* Temperature for AI model generation (default 0.7) */
+	float temperature;
+	char voice[64];           /* Voice name for Gemini (e.g., "Aoede") */
+	/* Conversation-trace capture (task-based voicebot assessment;
+	 * default off) */
+	/* enable input-audio transcription + conversation trace */
+	bool transcribe;
+	/* dir to write conversation-trace.json (agent's artifacts dir) */
+	char trace_dir[512];
+	/* Gemini VAD config */
+	bool gemini_vad_enabled;
+	char gemini_vad_start_sensitivity[64];
+	int gemini_vad_silence_duration_ms;
+	int gemini_vad_prefix_padding_ms;
+	/* Call state */
+	bool call_active;
+	struct call *current_call;
+	bool session_cfg_applied;   /* set after we see type=session.updated */
+	bool gemini_xfer_scheduled; /* Gemini: transfer already scheduled */
+	bool gemini_turn_had_audio; /* Gemini: model audio in current turn */
+
+	/* WebSocket state */
+	enum ws_state ws_state;
+	struct lws_context *ws_context;
+	struct lws *ws_client;
+	bool session_ready;
+	/* Gemini setup queued for current WS connection */
+	bool setup_sent;
+	bool speech_active;
+	bool conversation_kick_pending;
+
+	/* WebSocket thread */
+	pthread_t ws_thread;
+	bool ws_thread_running;
+	pthread_mutex_t ws_mutex;
+	pthread_cond_t ws_cond;
+
+	/* Message queues */
+	struct list to_openai_queue;    /* Messages to send to OpenAI */
+	struct list from_openai_queue;  /* Messages received from OpenAI */
+
+	/* Audio state */
+	struct ausrc *ausrc;
+	struct auplay *auplay;
 };
 
 /* Global instance */
@@ -104,7 +115,7 @@ void openai_rt_close(void);
 
 /* Call management */
 int calls_init(void);
- void calls_close(void);
+void calls_close(void);
 void openai_rt_call_started(struct call *call);
 void openai_rt_call_ended(void);
 
@@ -120,8 +131,9 @@ int websocket_wait_ready(int timeout_ms);
 const char *websocket_status_string(void);
 void send_session_update(void);
 void websocket_kick_session_setup(void);
-int queue_message_to_openai(const char *json_msg, size_t len, 
-                           void (*callback)(void *arg, int err), void *arg);
+int queue_message_to_openai(const char *json_msg, size_t len,
+			    void (*callback)(void *arg, int err),
+			    void *arg);
 int queue_message_from_openai(const uint8_t *data, size_t len);
 void websocket_clear_message_queue(void);
 
@@ -147,15 +159,19 @@ bool audio_ready_for_call(void);
 
 /* Audio driver allocation functions */
 int openai_rt_ausrc_alloc(struct ausrc_st **stp, const struct ausrc *as,
-                          struct ausrc_prm *prm, const char *dev,
-                          ausrc_read_h *rh, ausrc_error_h *errh, void *arg);
-int openai_rt_auplay_alloc(struct auplay_st **stp, const struct auplay *ap,
-                           struct auplay_prm *prm, const char *dev,
-                           auplay_write_h *wh, void *arg);
+			  struct ausrc_prm *prm, const char *dev,
+			  ausrc_read_h *rh, ausrc_error_h *errh,
+			  void *arg);
+int openai_rt_auplay_alloc(struct auplay_st **stp,
+			   const struct auplay *ap,
+			   struct auplay_prm *prm, const char *dev,
+			   auplay_write_h *wh, void *arg);
 
 /* Audio processing functions */
-size_t downsample_pcm16_24k_to_8k(const int16_t *in, size_t in_sampc, int16_t *out);
-int write_to_injection_buffer(const int16_t *samples, size_t sample_count);
+size_t downsample_pcm16_24k_to_8k(const int16_t *in, size_t in_sampc,
+				  int16_t *out);
+int write_to_injection_buffer(const int16_t *samples,
+			      size_t sample_count);
 int resize_injection_buffer(size_t new_size_samples);
 
 /* Utility functions */
@@ -170,76 +186,100 @@ int read_config(void);
 
 /* Audio frame structure for queue communication */
 struct audio_frame {
-    int16_t *sampv;          /* Audio samples */
-    size_t sampc;             /* Number of samples */
-    uint32_t srate;           /* Sample rate */
-    uint8_t ch;               /* Number of channels */
-    struct le le;             /* List element */
+	int16_t *sampv;          /* Audio samples */
+	size_t sampc;             /* Number of samples */
+	uint32_t srate;           /* Sample rate */
+	uint8_t ch;               /* Number of channels */
+	struct le le;             /* List element */
 };
 
 /* Event types for the event queue */
 enum event_type {
-    EVENT_CALL_START,         /* Call started - connect to OpenAI */
-    EVENT_CALL_END,           /* Call ended - disconnect from OpenAI */
+	EVENT_CALL_START,         /* Call started - connect to OpenAI */
+	EVENT_CALL_END,           /* Call ended - disconnect from OpenAI */
 };
 
 /* Event structure for the event queue */
 struct audio_event {
-    enum event_type type;     /* Event type */
-    void *data;               /* Event-specific data */
-    struct le le;             /* List element */
+	enum event_type type;     /* Event type */
+	void *data;               /* Event-specific data */
+	struct le le;             /* List element */
 };
 
 /* Audio system state */
 struct audio_state {
-    struct ausrc_st *src_st;           /* Audio source (provides audio to call) */
-    struct auplay_st *play_st;         /* Audio player (receives audio from call) */
-    struct list read_queue;            /* Queue of audio frames to provide to call */
-    struct list write_queue;           /* Queue of audio frames from call */
-    struct list event_queue;           /* Queue of events to process */
-    mtx_t read_queue_mutex;            /* Mutex for read queue access */
-    mtx_t write_queue_mutex;           /* Mutex for write queue access */
-    mtx_t event_queue_mutex;           /* Mutex for event queue access */
-    cnd_t read_queue_cond;             /* Condition variable for read queue */
-    cnd_t write_queue_cond;            /* Condition variable for write queue */
-    cnd_t event_queue_cond;            /* Condition variable for event queue */
-    struct mbuf *g711u_output_buffer;  /* Buffer for OpenAI audio to inject */
-    struct mbuf *g711u_input_buffer;   /* Buffer for audio from call to OpenAI */
-    size_t buffer_size;                /* Size of audio buffers */
-    size_t audio_accumulated;          /* Amount of audio accumulated since last commit */
-    size_t commit_threshold;           /* Threshold to trigger commit (in bytes) */
-    bool response_created;             /* Whether response.create has been sent for current session */
-    
-    /* Circular buffer for smooth audio injection */
-    int16_t *injection_buffer;         /* Circular buffer for OpenAI audio */
-    size_t injection_buffer_size;      /* Total size of injection buffer in samples */
-    size_t injection_read_pos;         /* Read position in circular buffer */
-    size_t injection_write_pos;        /* Write position in circular buffer */
-    size_t injection_available;        /* Number of samples available for reading */
-    mtx_t injection_buffer_mutex;      /* Mutex for injection buffer access */
+	/* Audio source (provides audio to call) */
+	struct ausrc_st *src_st;
+	/* Audio player (receives audio from call) */
+	struct auplay_st *play_st;
+	/* Queue of audio frames to provide to call */
+	struct list read_queue;
+	/* Queue of audio frames from call */
+	struct list write_queue;
+	struct list event_queue;           /* Queue of events to process */
+	mtx_t read_queue_mutex;            /* Mutex for read queue access */
+	mtx_t write_queue_mutex;           /* Mutex for write queue access */
+	mtx_t event_queue_mutex;           /* Mutex for event queue access */
+	/* Condition variable for read queue */
+	cnd_t read_queue_cond;
+	/* Condition variable for write queue */
+	cnd_t write_queue_cond;
+	/* Condition variable for event queue */
+	cnd_t event_queue_cond;
+	/* Buffer for OpenAI audio to inject */
+	struct mbuf *g711u_output_buffer;
+	/* Buffer for audio from call to OpenAI */
+	struct mbuf *g711u_input_buffer;
+	size_t buffer_size;                /* Size of audio buffers */
+	/* Amount of audio accumulated since last commit */
+	size_t audio_accumulated;
+	/* Threshold to trigger commit (in bytes) */
+	size_t commit_threshold;
+	/* Whether response.create has been sent for current session */
+	bool response_created;
 
-    /* Batched PCM uplink (phone -> OpenAI), flushed as one append */
-    int16_t *uplink_batch;
-    size_t uplink_batch_cap;           /* capacity in samples */
-    size_t uplink_batch_len;           /* samples currently buffered */
+	/* Circular buffer for smooth audio injection */
+	/* Circular buffer for OpenAI audio */
+	int16_t *injection_buffer;
+	/* Total size of injection buffer in samples */
+	size_t injection_buffer_size;
+	/* Read position in circular buffer */
+	size_t injection_read_pos;
+	/* Write position in circular buffer */
+	size_t injection_write_pos;
+	/* Number of samples available for reading */
+	size_t injection_available;
+	/* Mutex for injection buffer access */
+	mtx_t injection_buffer_mutex;
+
+	/* Batched PCM uplink (phone -> OpenAI), flushed as one append */
+	int16_t *uplink_batch;
+	size_t uplink_batch_cap;           /* capacity in samples */
+	size_t uplink_batch_len;           /* samples currently buffered */
 };
 
 /* Audio commit threshold - commit after accumulating this many bytes */
 /* 800ms at 24kHz PCM16 = 24000 * 2 * 0.8 = 38400 bytes */
 #define AUDIO_COMMIT_THRESHOLD 38400
 
-/* PoC: batch uplink PCM before one WS append (reduces queue pressure on ECS) */
+/* PoC: batch uplink PCM before one WS append
+ * (reduces queue pressure on ECS) */
 #define UPLINK_BATCH_MS 100
-#define UPLINK_BATCH_BYTES ((24000 * UPLINK_BATCH_MS / 1000) * sizeof(int16_t))
+#define UPLINK_BATCH_BYTES ((24000 * UPLINK_BATCH_MS / 1000) \
+			    * sizeof(int16_t))
 
 /* Skip near-silent output deltas (leading AAAA chunks from API) */
 #define OUTPUT_DELTA_PEAK_MIN 64
 
 /* Injection buffer sizing limits */
-#define INJECTION_BUFFER_INITIAL_SIZE 128000    /* Initial size in samples (16 seconds @ 8kHz) */
-#define INJECTION_BUFFER_MIN_SIZE 32000         /* Minimum size in samples (4 seconds @ 8kHz) */
-#define INJECTION_BUFFER_MAX_SIZE 2000000       /* Maximum size in samples (250 seconds @ 8kHz) */
-#define INJECTION_BUFFER_GROWTH_FACTOR 2        /* Multiply by this when growing */
+/* Initial size in samples (16 seconds @ 8kHz) */
+#define INJECTION_BUFFER_INITIAL_SIZE 128000
+/* Minimum size in samples (4 seconds @ 8kHz) */
+#define INJECTION_BUFFER_MIN_SIZE 32000
+/* Maximum size in samples (250 seconds @ 8kHz) */
+#define INJECTION_BUFFER_MAX_SIZE 2000000
+/* Multiply by this when growing */
+#define INJECTION_BUFFER_GROWTH_FACTOR 2
 
 /* Defer blind transfer until TTS injection buffer has drained */
 #define TRANSFER_DRAIN_POLL_MS 50
@@ -249,7 +289,8 @@ struct audio_state {
 extern struct audio_state g_audio;
 
 /* Queue management functions */
-int audio_queue_read_frame(const int16_t *sampv, size_t sampc, uint32_t srate, uint8_t ch);
+int audio_queue_read_frame(const int16_t *sampv, size_t sampc,
+			   uint32_t srate, uint8_t ch);
 int audio_queue_event(enum event_type type, void *data);
 struct audio_event *audio_get_next_event(void);
 struct audio_frame *audio_get_next_write_frame(void);
@@ -261,9 +302,9 @@ void calls_send_digit(char key);
 int calls_send_dtmf(const char *digits);
 int calls_transfer(const char *destination);
 int calls_api_call(const char *method, const char *uri,
-                   const char *content_type, const char *auth_type,
-                   const char *auth_username, const char *auth_password,
-                   const char *body, char **output);
+		   const char *content_type, const char *auth_type,
+		   const char *auth_username, const char *auth_password,
+		   const char *body, char **output);
 int calls_queue_voiceai_content(const char *side, const char *content);
 
 #endif /* OPENAI_RT_H */

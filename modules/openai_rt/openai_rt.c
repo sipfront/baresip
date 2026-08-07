@@ -48,16 +48,20 @@ static int module_init(void)
 	}
 
 	if (!str_isset(g_oairt.api_key)) {
-		warning("openai_rt: No API key configured. Please set openai_rt_api_key in config\n");
+		warning("openai_rt: No API key configured."
+			" Please set openai_rt_api_key in config\n");
 		return EINVAL;
 	}
 
-	/* Initialize conversation-trace capture (no-op unless openai_rt_transcribe=yes) */
+	/* Initialize conversation-trace capture (no-op unless
+	 * openai_rt_transcribe=yes) */
 	trace_init();
 	trace_set_enabled(g_oairt.transcribe);
 	if (g_oairt.transcribe) {
-		info("openai_rt: conversation-trace capture ENABLED (dir: %s)\n",
-			str_isset(g_oairt.trace_dir) ? g_oairt.trace_dir : "<config dir>");
+		info("openai_rt: conversation-trace capture ENABLED"
+			" (dir: %s)\n",
+			str_isset(g_oairt.trace_dir) ? g_oairt.trace_dir
+			: "<config dir>");
 	}
 
 	/* Initialize AI model system */
@@ -70,7 +74,8 @@ static int module_init(void)
 	/* Initialize subsystems */
 	err = websocket_init();
 	if (err) {
-		warning("openai_rt: failed to initialize WebSocket: %m\n", err);
+		warning("openai_rt: failed to initialize WebSocket:"
+			" %m\n", err);
 		goto out;
 	}
 
@@ -85,25 +90,28 @@ static int module_init(void)
 
 	err = calls_init();
 	if (err) {
-		warning("openai_rt: failed to initialize call management: %m\n", err);
+		warning("openai_rt: failed to initialize call management:"
+			" %m\n", err);
 		goto out;
 	}
 
 	/* Register audio source */
 
-    err = ausrc_register(&g_oairt.ausrc, baresip_ausrcl(), "openai_rt",
+	err = ausrc_register(&g_oairt.ausrc, baresip_ausrcl(), "openai_rt",
 			     openai_rt_ausrc_alloc);
 	if (err) {
-		warning("openai_rt: failed to register audio source: %m\n", err);
+		warning("openai_rt: failed to register audio source:"
+			" %m\n", err);
 		goto out;
 	}
 
 	/* Register audio player */
 
-    err = auplay_register(&g_oairt.auplay, baresip_auplayl(), "openai_rt",
+	err = auplay_register(&g_oairt.auplay, baresip_auplayl(), "openai_rt",
 			      openai_rt_auplay_alloc);
 	if (err) {
-		warning("openai_rt: failed to register audio player: %m\n", err);
+		warning("openai_rt: failed to register audio player:"
+			" %m\n", err);
 		goto out;
 	}
 

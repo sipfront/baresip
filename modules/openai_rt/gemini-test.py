@@ -9,15 +9,19 @@ import os
 # docs at https://ai.google.dev/api/live#send-messages
 
 # The Endpoint for Ephemeral Tokens is strictly "Constrained"
-URI = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained"
+URI = (
+    "wss://generativelanguage.googleapis.com/ws/"
+    "google.ai.generativelanguage.v1alpha.GenerativeService."
+    "BidiGenerateContentConstrained"
+)
 MODEL = "gemini-2.5-flash-native-audio-preview-09-2025"
 # MODEL = "gemini-live-2.5-flash-preview-native-audio-09-2025"
 
 async def connect_and_run(token):
-    # FIX: Use 'Token' schema, NOT 'Bearer'. 
+    # FIX: Use 'Token' schema, NOT 'Bearer'.
     # 'Bearer' triggers OAuth checks which fail for these tokens.
     headers = {
-        "Authorization": f"Token {token}", 
+        "Authorization": f"Token {token}",
         "Content-Type": "application/json"
     }
 
@@ -36,42 +40,63 @@ async def connect_and_run(token):
             print(f"  {key}: {value}")
     print("=" * 80)
     print()
-    
+
     try:
-        async with websockets.connect(URI, additional_headers=headers) as websocket:
+        async with websockets.connect(
+            URI, additional_headers=headers
+        ) as websocket:
             print("✅ Connected!")
             print()
 
             # Setup message based on working SDK example
-            # Note: Even with ephemeral tokens, the SDK sends a full setup message
-            # with model (with "models/" prefix) and systemInstruction (with "role": "user")
+            # Note: Even with ephemeral tokens, the SDK sends a full
+            # setup message with model (with "models/" prefix) and
+            # systemInstruction (with "role": "user")
             # docs at:
             # https://ai.google.dev/api/live#bidigeneratecontentsetup
-            # https://ai.google.dev/api/generate-content#v1alpha.GenerationConfig
-            # https://ai.google.dev/gemini-api/docs/function-calling?example=meeting
+            # https://ai.google.dev/api/generate-content
+            #   #v1alpha.GenerationConfig
+            # https://ai.google.dev/gemini-api/docs/function-calling
+            #   ?example=meeting
             setup_msg = {
                 "setup": {
                     "model": "models/" + MODEL,
                     "generationConfig": {
-                        "responseModalities": ["AUDIO"], 
-                        "speechConfig": { #https://ai.google.dev/api/generate-content#SpeechConfig
-                            "voiceConfig": { 
-                                "prebuiltVoiceConfig": {  
-                                    "voiceName": "Aoede" # https://ai.google.dev/gemini-api/docs/speech-generation#voices
+                        "responseModalities": ["AUDIO"],
+                        # SpeechConfig:
+                        # https://ai.google.dev/api/generate-content
+                        #   #SpeechConfig
+                        "speechConfig": {
+                            "voiceConfig": {
+                                "prebuiltVoiceConfig": {
+                                    # Voices:
+                                    # https://ai.google.dev/gemini-api
+                                    #   /docs/speech-generation#voices
+                                    "voiceName": "Aoede"
                                 }
                             },
                         },
-                        "temperature": 0.7, # randomness of output
+                        "temperature": 0.7,  # randomness of output
                     },
-                    "systemInstruction": { # https://ai.google.dev/api/caching#Content
+                    # Content:
+                    # https://ai.google.dev/api/caching#Content
+                    "systemInstruction": {
                         "parts": [
                             {
-                                "text": "You are a helpful assistant and answer in a friendly tone. First thing, log a test message via logtest."
+                                "text": (
+                                    "You are a helpful assistant and "
+                                    "answer in a friendly tone. First "
+                                    "thing, log a test message via "
+                                    "logtest."
+                                )
                             }
                         ],
                         "role": "user"
                     },
-                    "tools": [ # https://ai.google.dev/gemini-api/docs/function-calling?example=meeting
+                    # Function calling:
+                    # https://ai.google.dev/gemini-api/docs/
+                    #   function-calling?example=meeting
+                    "tools": [
                         {
                             "function_declarations": [
                                 {
@@ -82,22 +107,37 @@ async def connect_and_run(token):
                                         "properties": {
                                             "message": {
                                                 "type": "string",
-                                                "description": "The message to log"
+                                                "description": (
+                                                    "The message to log"
+                                                )
                                             },
                                             "level": {
                                                 "type": "string",
-                                                "description": "The level of the message",
-                                                "enum": ["info", "warning", "error"]
+                                                "description": (
+                                                    "The level of the "
+                                                    "message"
+                                                ),
+                                                "enum": [
+                                                    "info",
+                                                    "warning",
+                                                    "error"
+                                                ]
                                             }
                                         },
-                                        "required": ["message", "level"]
+                                        "required": [
+                                            "message",
+                                            "level"
+                                        ]
                                     }
                                 }
                             ]
                         }
                     ],
                     "sessionResumption": {
-                        # "handle": "...", # https://ai.google.dev/api/live#SessionResumptionConfig
+                        # SessionResumptionConfig:
+                        # https://ai.google.dev/api/live
+                        #   #SessionResumptionConfig
+                        # "handle": "...",
                     },
                 }
             }
@@ -113,7 +153,7 @@ async def connect_and_run(token):
             print(json.dumps(setup_msg, indent=2))
             print("=" * 80)
             print()
-            
+
             await websocket.send(setup_msg_json)
             print("Setup message sent. Waiting for responses...")
             print()
@@ -122,65 +162,98 @@ async def connect_and_run(token):
             message_count = 0
             while True:
                 try:
-                    response_raw = await asyncio.wait_for(websocket.recv(), timeout=300.0)
+                    response_raw = await asyncio.wait_for(
+                        websocket.recv(), timeout=300.0
+                    )
                     message_count += 1
-                    
+
                     print("=" * 80)
                     print(f"RECEIVED JSON MESSAGE #{message_count}:")
                     print("=" * 80)
                     print("Raw JSON (exact bytes received):")
                     print(response_raw)
                     print()
-                    
+
                     try:
                         msg = json.loads(response_raw)
                         print("Formatted JSON (for readability):")
                         print(json.dumps(msg, indent=2))
                         print()
-                        
+
                         if "serverContent" in msg:
                             content = msg["serverContent"]
                             if "turnComplete" in content:
                                 print("📝 Server: Turn Complete")
                             elif "modelTurn" in content:
-                                print("🎵 Server: Audio/Text Data Received (Session is working!)")
-                                # We can exit the test successfully here if we want
+                                print(
+                                    "🎵 Server: Audio/Text Data "
+                                    "Received (Session is working!)"
+                                )
+                                # Exit the test successfully here
                                 print("=" * 80)
                                 print()
                                 return
-                        
+
                         elif "setupComplete" in msg:
-                            print("✅ Server accepted setup. Session is Live.")
-                        
+                            print(
+                                "✅ Server accepted setup. "
+                                "Session is Live."
+                            )
+
                     except json.JSONDecodeError as e:
-                        print(f"⚠️ Warning: Failed to parse JSON: {e}")
-                        print("Response (raw string representation):")
+                        print(
+                            f"⚠️ Warning: Failed to parse JSON: {e}"
+                        )
+                        print(
+                            "Response (raw string representation):"
+                        )
                         print(repr(response_raw))
-                    
+
                     print("=" * 80)
                     print()
 
                 except asyncio.TimeoutError:
                     if message_count == 0:
-                        print("⏱️  No response for 10s (Session might be idle).")
+                        print(
+                            "⏱️  No response for 10s "
+                            "(Session might be idle)."
+                        )
                     else:
-                        print(f"⏱️  Received {message_count} message(s). No more messages for 10s.")
+                        print(
+                            f"⏱️  Received {message_count} "
+                            "message(s). No more messages for 10s."
+                        )
                     break
-                    
+
     except websockets.InvalidStatusCode as e:
         status_code = getattr(e, 'status_code', 'unknown')
         print(f"❌ Connection Failed: HTTP Status {status_code}")
         if status_code in [403, 401]:
-            print("   (Check your Token validity or API Key permissions)")
+            print(
+                "   (Check your Token validity or API Key "
+                "permissions)"
+            )
     except websockets.ConnectionClosed as e:
         close_code = getattr(e, 'code', 'unknown')
         close_reason = getattr(e, 'reason', 'unknown')
-        print(f"❌ Connection Closed: {close_code} - {close_reason}")
-        if close_code == 1007 and "project-scoped" in str(close_reason).lower():
+        print(
+            f"❌ Connection Closed: {close_code} - {close_reason}"
+        )
+        reason_l = str(close_reason).lower()
+        if close_code == 1007 and "project-scoped" in reason_l:
             print()
-            print("⚠️  ERROR: Ephemeral tokens cannot use project-scoped models!")
-            print("   The token was created with a model that requires project-scoped access.")
-            print("   Solution: Recreate the token with a base model (e.g., gemini-1.5-flash)")
+            print(
+                "⚠️  ERROR: Ephemeral tokens cannot use "
+                "project-scoped models!"
+            )
+            print(
+                "   The token was created with a model that "
+                "requires project-scoped access."
+            )
+            print(
+                "   Solution: Recreate the token with a base "
+                "model (e.g., gemini-1.5-flash)"
+            )
     except Exception as e:
         error_type = type(e).__name__
         print(f"❌ Error ({error_type}): {e}")
@@ -188,7 +261,7 @@ async def connect_and_run(token):
         traceback.print_exc()
 
 if __name__ == "__main__":
-    # Only accept token as command line argument, no environment variables
+    # Only accept token as command line argument
     if len(sys.argv) < 2:
         print("Usage: python3 gemini-test.py <auth_tokens/...>")
         print("")
@@ -197,10 +270,13 @@ if __name__ == "__main__":
         print("")
         print("Note: Token should be obtained from create_token.sh")
         sys.exit(1)
-    
+
     token_arg = sys.argv[1]
-    
+
     if not token_arg.startswith("auth_tokens/"):
-        print("Warning: Token usually starts with 'auth_tokens/'. Proceeding...")
+        print(
+            "Warning: Token usually starts with "
+            "'auth_tokens/'. Proceeding..."
+        )
 
     asyncio.run(connect_and_run(token_arg))

@@ -827,7 +827,8 @@ void sipsess_conn_handler(const struct sip_msg *msg, void *arg)
 		info("ua: call from %r rejected by answer mode\n",
 		     &msg->from.auri);
 		bevent_ua_emit(UA_EVENT_CALL_INCOMING, ua, "");
-		sip_treply(NULL, uag_sip(), msg, ua->acc->rcode, ua->acc->rreason);
+		sip_treply(NULL, uag_sip(), msg, ua->acc->rcode,
+			   ua->acc->rreason);
 		bevent_ua_emit(UA_EVENT_CALL_REJECTED, ua, "");
 		return;
 	}
