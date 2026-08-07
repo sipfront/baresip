@@ -749,6 +749,13 @@ int calls_queue_voiceai_content(const char *side, const char *content)
 		return EINVAL;
 	}
 
+	/* side is interpolated into the JSON payload unescaped; enforce the documented
+	 * values so a stray caller can never produce invalid JSON. */
+	if (strcmp(side, "self") != 0 && strcmp(side, "other") != 0) {
+		warning("openai_rt: calls_queue_voiceai_content: invalid side '%s'\n", side);
+		return EINVAL;
+	}
+
 	err = json_escape(&escaped, content);
 	if (err)
 		return err;

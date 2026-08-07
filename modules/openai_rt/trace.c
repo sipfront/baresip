@@ -205,11 +205,13 @@ void trace_add_turn(const char *role, const char *text)
 	pthread_mutex_lock(&g_trace.mtx);
 	now = rel_ms_locked();
 
-	/* Coalesce with the previous turn when it is the same speaker and close in time
-	 * (streamed transcription fragments) -- do not emit yet, the turn is still growing. */
+	/* Coalesce with the previous turn when it is still pending (not yet emitted), the
+	 * same speaker, and close in time (streamed transcription fragments) -- do not emit
+	 * yet, the turn is still growing. Once a turn has been emitted (e.g. by trace_flush)
+	 * it must not grow further, or the appended text would never be evented. */
 	tail = list_tail(&g_trace.turns);
 	last = tail ? list_ledata(tail) : NULL;
-	if (last && strcmp(last->role, role) == 0 &&
+	if (last && !last->emitted && strcmp(last->role, role) == 0 &&
 	    now >= last->end_ms && (now - last->end_ms) <= TRACE_COALESCE_MS) {
 		char *merged = NULL;
 		if (re_sdprintf(&merged, "%s%s", last->text, text) == 0 && merged) {
@@ -399,7 +401,12 @@ int trace_write_file(void)
 
 	json_str = json_object_to_json_string_ext(root, JSON_C_TO_STRING_PRETTY);
 
-	re_snprintf(path, sizeof(path), "%s/%s", dir, TRACE_FILENAME);
+	if (re_snprintf(path, sizeof(path), "%s/%s", dir, TRACE_FILENAME) < 0) {
+		warning("openai_rt: trace: output path too long for dir '%s'\n", dir);
+		json_object_put(root);
+		pthread_mutex_unlock(&g_trace.mtx);
+		return EOVERFLOW;
+	}
 
 	err = fs_fopen(&fp, path, "w");
 	if (!err && fp && json_str) {

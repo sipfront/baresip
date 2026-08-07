@@ -636,22 +636,25 @@ static void execute_tool_call(const char *call_id, const char *name,
 		 * No side effect on the call -- record under the caller-supplied label (with the
 		 * full arguments as payload) and acknowledge. */
 		struct json_object *args_obj = json_tokener_parse(arguments);
-		struct json_object *label_obj = NULL;
-		const char *label = NULL;
+		struct json_object *label_obj = NULL, *value_obj = NULL;
+		const char *label = NULL, *value = NULL;
 
-		if (args_obj &&
-		    json_object_object_get_ex(args_obj, "label", &label_obj))
-			label = json_object_get_string(label_obj);
+		if (args_obj) {
+			if (json_object_object_get_ex(args_obj, "label", &label_obj))
+				label = json_object_get_string(label_obj);
+			if (json_object_object_get_ex(args_obj, "value", &value_obj))
+				value = json_object_get_string(value_obj);
+		}
 
-		if (label && *label) {
+		if (label && *label && value && *value) {
 			DEBUG_INFO("openai_rt: Recording event '%s'\n", label);
 			trace_add_toolcall(label, arguments);
 			send_function_call_output(call_id, name, "Recorded");
 		}
 		else {
-			warning("openai_rt: record_event missing 'label'\n");
+			warning("openai_rt: record_event missing 'label' or 'value'\n");
 			send_function_call_output(call_id, name,
-			                          "Error: Missing 'label' parameter");
+			                          "Error: Missing 'label' or 'value' parameter");
 		}
 
 		if (args_obj)
