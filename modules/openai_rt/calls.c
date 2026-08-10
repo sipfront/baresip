@@ -5,6 +5,7 @@
  #include <re.h>
  #include <rem.h>
 #include <baresip.h>
+#include <time.h>
 #include "openai_rt.h"
 #include "trace.h"
 
@@ -755,17 +756,25 @@ int calls_api_call(const char *method, const char *uri,
 	DEBUG_INFO("calls_api_call: waiting for response...\n");
 	mtx_lock(&sync.mtx);
 	if (!sync.done) {
-		/* Wait with timeout to prevent hanging baresip if callback is
-		 * never called */
-		uint64_t wait_start = tmr_jiffies();
+		/* Wait against an absolute 10s deadline: cnd_wait() would
+		 * block forever if the HTTP callback never fires (e.g. a
+		 * network hang), so cnd_timedwait() (TIME_UTC based) returns
+		 * thrd_timedout once the deadline passes. */
+		struct timespec ts;
+		timespec_get(&ts, TIME_UTC);
+		ts.tv_sec += 10;
 		while (!sync.done) {
-			cnd_wait(&sync.cnd, &sync.mtx);
-
-			/* Break if we've waited more than 10 seconds */
-			if (tmr_jiffies() - wait_start > 10000) {
+			int rc = cnd_timedwait(&sync.cnd, &sync.mtx, &ts);
+			if (rc == thrd_timedout) {
 				warning("openai_rt: calls_api_call timed out "
 					"after 10s\n");
 				ad.err = ETIMEDOUT;
+				break;
+			}
+			if (rc != thrd_success) {
+				warning("openai_rt: calls_api_call wait "
+					"failed\n");
+				ad.err = EPIPE;
 				break;
 			}
 		}
