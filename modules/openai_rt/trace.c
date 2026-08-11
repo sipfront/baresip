@@ -11,10 +11,12 @@
  * events + structured_response_times as turn-taking input).
  *
  * Threading: trace_add_* run on the WebSocket thread (from the message
- * parsers); trace_write_file runs on the RE main thread
- * (UA_EVENT_CALL_CLOSED). A single mutex guards the shared lists. Everything
- * is a no-op unless capture is enabled (openai_rt_transcribe=yes), so plain
- * voice / fixed-media calls are unaffected.
+ * parsers); trace_write_file runs on the RE main thread after a post-hangup
+ * grace timer (WS stays connected across calls; trailing transcripts are
+ * common). A single mutex guards the shared lists. After write the store is
+ * sealed until the next trace_reset. Everything is a no-op unless capture is
+ * enabled (openai_rt_transcribe=yes), so plain voice / fixed-media calls are
+ * unaffected.
  *
  * Copyright (C) 2025 Sipfront
  */
@@ -63,6 +65,8 @@ struct trace_event {
 static struct {
 	bool inited;
 	bool enabled;
+	/* After write_file: ignore add_* until reset (next call). */
+	bool sealed;
 	pthread_mutex_t mtx;
 	uint64_t call_start_ms;
 	struct list turns;       /* struct trace_turn */
@@ -157,6 +161,7 @@ void trace_reset(void)
 		return;
 	pthread_mutex_lock(&g_trace.mtx);
 	clear_locked();
+	g_trace.sealed = false;
 	g_trace.call_start_ms = tmr_jiffies();
 	pthread_mutex_unlock(&g_trace.mtx);
 }
@@ -215,6 +220,10 @@ void trace_add_turn(const char *role, const char *text)
 		return;
 
 	pthread_mutex_lock(&g_trace.mtx);
+	if (g_trace.sealed) {
+		pthread_mutex_unlock(&g_trace.mtx);
+		return;
+	}
 	now = rel_ms_locked();
 
 	/* Coalesce with the previous turn when it is still pending (not yet
@@ -300,6 +309,11 @@ void trace_add_toolcall(const char *name, const char *arguments)
 		(void)str_dup(&t->arguments, arguments);
 
 	pthread_mutex_lock(&g_trace.mtx);
+	if (g_trace.sealed) {
+		pthread_mutex_unlock(&g_trace.mtx);
+		mem_deref(t);
+		return;
+	}
 	t->ts_ms = rel_ms_locked();
 	list_append(&g_trace.toolcalls, &t->le, t);
 	pthread_mutex_unlock(&g_trace.mtx);
@@ -326,6 +340,11 @@ void trace_add_event(const char *kind)
 	}
 
 	pthread_mutex_lock(&g_trace.mtx);
+	if (g_trace.sealed) {
+		pthread_mutex_unlock(&g_trace.mtx);
+		mem_deref(e);
+		return;
+	}
 	e->ts_ms = rel_ms_locked();
 	list_append(&g_trace.events, &e->le, e);
 	pthread_mutex_unlock(&g_trace.mtx);
@@ -461,6 +480,11 @@ int trace_write_file(void)
 	}
 
 	json_object_put(root);
+
+	/* Seal so post-write WS traffic cannot mutate the artifact or leak
+	 * into the next call's in-memory store before reset. */
+	if (!err)
+		g_trace.sealed = true;
 
 	pthread_mutex_unlock(&g_trace.mtx);
 	return err;

@@ -42,19 +42,22 @@ void trace_reset(void);
 
 /* Capture (safe to call from the WebSocket thread). trace_add_turn coalesces
  * streamed fragments into one turn and, when a turn completes, logs it and
- * emits it as a VOICEAI_CONTENT event (combined text, tagged by side). */
+ * emits it as a VOICEAI_CONTENT event (combined text, tagged by side). Adds
+ * are ignored after trace_write_file until the next trace_reset. */
 void trace_add_turn(const char *role, const char *text);
 void trace_add_toolcall(const char *name, const char *arguments);
 void trace_add_event(const char *kind);
 
-/* Emit the final pending turn (call at end of call, before writing the trace
- * file). */
+/* Emit the final pending turn (call before writing the trace file, and once
+ * at hangup so the last turn is evented while a call ref is still held). */
 void trace_flush(void);
 
 /* Serialize the accumulated trace to <trace_dir>/conversation-trace.json (or
  * the baresip config dir when no trace_dir is configured). Returns 0 on
- * success and is a no-op returning 0 when capture is disabled. Call from the
- * RE main thread on call close. */
+ * success and is a no-op returning 0 when capture is disabled. Seals the
+ * store so trailing WS messages cannot mutate a written artifact. Call from
+ * the RE main thread after a short post-hangup grace (WS stays up across
+ * calls; transcripts often arrive after CALL_CLOSED). */
 int trace_write_file(void);
 
 #endif /* OPENAI_RT_TRACE_H */

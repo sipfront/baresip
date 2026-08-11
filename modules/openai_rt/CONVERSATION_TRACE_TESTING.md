@@ -17,7 +17,7 @@ completion and turn-taking.
 | `openai.c` | `input_audio_transcription` added to the session update (gated by `openai_rt_transcribe`); parse branches for `conversation.item.input_audio_transcription.completed` → **OTHER** and `response.output_audio_transcript.done` / `response.audio_transcript.done` → **SELF**. New general-purpose observable-event tool def (`record_event`, with `label` + `value`). |
 | `gemini.c` | `inputAudioTranscription` + `outputAudioTranscription` added to setup (gated), with `responseModalities` kept AUDIO-only. Parses `serverContent.inputTranscription.text` → **OTHER** and `outputTranscription.text` → **SELF**. Streamed fragments are coalesced by `trace.c`. (Note: `outputAudioTranscription` previously correlated with a turn-taking regression; re-enabled per request — re-test that the caller still yields.) |
 | `websocket.c` | `handle_function_call_cb` records observable-action tool-calls into the trace and acks them; `handle_speech_started_cb` records a `speech_started` event. |
-| `calls.c` | `trace_reset()` on `UA_EVENT_CALL_ESTABLISHED`; `trace_write_file()` on `UA_EVENT_CALL_CLOSED`. |
+| `calls.c` | `trace_reset()` on `UA_EVENT_CALL_ESTABLISHED`; on `UA_EVENT_CALL_CLOSED` flush + start a 3s grace timer, then `trace_write_file()` (WS stays up; trailing transcripts are common). `content_call` keeps a call ref so final `VOICEAI_CONTENT` mqueue events still emit after `current_call` is cleared. |
 | `openai_rt.c` / `utils.c` / `openai_rt.h` | Lifecycle (`trace_init`/`trace_close`), config (`openai_rt_transcribe`, `openai_rt_trace_dir`). |
 | `ai_model.h` | `extern` decls for the observable-action tools. |
 | `CMakeLists.txt` | `trace.c` added to `SRCS`. |
@@ -95,7 +95,8 @@ libre symbol availability (`json_object_to_json_string_ext`, `fs_fopen`, `fs_isd
 ## Log checkpoints
 
 - `openai_rt: conversation-trace capture ENABLED (dir: ...)` at module init.
-- `openai_rt: trace: wrote <path> (N turns, M actions, K events)` at call close.
+- `openai_rt: trace: wrote <path> (N turns, M actions, K events)` ~3s after call
+  close (post-hangup grace for trailing transcripts).
 - `openai_rt: Recording observable action '<name>'` when a `record_*` tool fires.
 
 ## Caveats to verify against the live APIs (version-sensitive)
