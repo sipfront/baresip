@@ -142,7 +142,9 @@ int json_escape(char **dst, const char *src)
 			len += 2;
 			break;
 		default:
-			if (*s < 0x20)
+			/* Cast to unsigned so UTF-8 bytes >= 0x80 (negative
+			 * as signed char) aren't treated as control chars. */
+			if ((unsigned char)*s < 0x20)
 				len += 6; /* \uXXXX */
 			else
 				len += 1;
@@ -167,7 +169,7 @@ int json_escape(char **dst, const char *src)
 		case '\r': *d++ = '\\'; *d++ = 'r'; break;
 		case '\t': *d++ = '\\'; *d++ = 't'; break;
 		default:
-			if (*s < 0x20) {
+			if ((unsigned char)*s < 0x20) {
 				re_snprintf(d, 7, "\\u%04x",
 					    (unsigned char)*s);
 				d += 6;
