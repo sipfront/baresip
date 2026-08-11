@@ -105,13 +105,6 @@ static const char *get_json_string_field_optional(struct json_object *obj,
 	return json_object_get_string(field_obj);
 }
 
-static const char *get_json_string_field(struct json_object *obj,
-	const char *field_name,
-		const char *context);
-static struct json_object *get_json_object_field(struct json_object *obj,
-		const char *field_name,
-		const char *context);
-
 /* Gemini AI model implementation */
 struct ai_model gemini_model = {
 	.name = "gemini",
@@ -691,38 +684,6 @@ static struct json_object *parse_json_safe(const char *json_str,
 			"Failed to parse Gemini JSON in %s\n", context);
 	}
 	return root;
-}
-
-/* Warning versions for required fields */
-static const char *get_json_string_field(struct json_object *obj,
-	const char *field_name,
-		const char *context)
-{
-	struct json_object *field_obj = NULL;
-	if (!json_object_object_get_ex(obj, field_name, &field_obj)) {
-		warning("openai_rt: Gemini JSON message missing required "
-			"'%s' field in %s\n", field_name, context);
-		return NULL;
-	}
-	if (!json_object_is_type(field_obj, json_type_string)) {
-		warning("openai_rt: Gemini JSON '%s' field is not a string "
-			"in %s\n", field_name, context);
-		return NULL;
-	}
-	return json_object_get_string(field_obj);
-}
-
-static struct json_object *get_json_object_field(struct json_object *obj,
-		const char *field_name,
-		const char *context)
-{
-	struct json_object *field_obj = NULL;
-	if (!json_object_object_get_ex(obj, field_name, &field_obj)) {
-		warning("openai_rt: Gemini JSON message missing required "
-			"'%s' field in %s\n", field_name, context);
-		return NULL;
-	}
-	return field_obj;
 }
 
 /**
