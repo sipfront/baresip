@@ -19,13 +19,59 @@ enum call_mq_events {
 	MQ_VOICEAI_CONTENT,
 };
 
+/* WS stays up across calls; Realtime/Live often delivers final transcripts
+ * shortly after hangup. Defer writing conversation-trace.json so trailing
+ * events land in the artifact. */
+#define TRACE_WRITE_GRACE_MS 3000
+
 /* Static module state */
 static struct {
 	/* Message queue for thread-safe call operations */
 	struct mqueue *mq;
 	/* Flag to prevent operations during shutdown */
 	bool shutting_down;
+	/* mem_ref'd call used for VOICEAI_CONTENT after current_call is
+	 * cleared (mqueue runs after the CALL_CLOSED handler returns). */
+	struct call *content_call;
+	struct tmr trace_write_tmr;
 } calls_state;
+
+static void trace_finalize_write(void);
+
+static void content_call_set(struct call *call)
+{
+	if (calls_state.content_call == call)
+		return;
+	/* Switching calls: finish the previous call's deferred write first
+	 * so trailing VOICEAI_CONTENT still targets the right call and the
+	 * artifact is sealed before the next call resets the store. */
+	if (calls_state.content_call)
+		trace_finalize_write();
+	calls_state.content_call = mem_ref(call);
+}
+
+static void content_call_clear(void)
+{
+	calls_state.content_call = mem_deref(calls_state.content_call);
+}
+
+/* Flush pending turn(s), write the artifact, then drop the content_call
+ * ref. Safe to call more than once. */
+static void trace_finalize_write(void)
+{
+	tmr_cancel(&calls_state.trace_write_tmr);
+	trace_flush();
+	trace_write_file();
+	content_call_clear();
+}
+
+static void trace_write_tmr_handler(void *arg)
+{
+	(void)arg;
+	DEBUG_INFO("openai_rt: post-hangup grace elapsed, writing "
+		"conversation trace\n");
+	trace_finalize_write();
+}
 
 /* Message queue handler - executes in RE main thread */
 static void mqueue_handler(int id, void *data, void *arg)
@@ -142,12 +188,15 @@ static void mqueue_handler(int id, void *data, void *arg)
 	case MQ_VOICEAI_CONTENT:
 		{
 			char *payload = (char *)data;
+			struct call *call = g_oairt.current_call
+				? g_oairt.current_call
+				: calls_state.content_call;
+
 			DEBUG_INFO("mqueue_handler: "
 				"Emitting VOICEAI_CONTENT %s\n", payload);
-			if (g_oairt.current_call) {
+			if (call) {
 				bevent_call_emit(UA_EVENT_VOICEAI_CONTENT,
-					g_oairt.current_call,
-				                "%s", payload);
+					call, "%s", payload);
 			}
 			else {
 				DEBUG_INFO("mqueue_handler: No active "
@@ -188,6 +237,7 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 
 			/* Store call reference for later use */
 			g_oairt.current_call = call;
+			content_call_set(call);
 
 			/* Only reset Gemini session if WS is down or setup
 			 * never completed */
@@ -218,6 +268,7 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 
 			/* Store call reference for later use */
 			g_oairt.current_call = call;
+			content_call_set(call);
 
 			/* Only reset Gemini session if WS is down or setup
 			 * never completed */
@@ -250,6 +301,10 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 			g_oairt.current_call = call;
 			g_oairt.gemini_xfer_scheduled = false;
 			g_oairt.gemini_turn_had_audio = false;
+
+			/* content_call_set finalizes any deferred write from a
+			 * previous call when the call object changes. */
+			content_call_set(call);
 
 			/* Start a fresh conversation trace for this call
 			 * (no-op unless enabled) */
@@ -300,13 +355,18 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 		info("openai_rt: Call CLOSED\n");
 		DEBUG_INFO("Call closed - queuing end event\n");
 
-		/* Emit the last pending turn, then persist the conversation
-		 * trace into the artifacts dir before teardown, so the agent's
-		 * artifact-upload loop ships it to S3 (no-op unless capture is
-		 * enabled). Runs on the RE main thread here, which is safe for
-		 * file I/O. */
+		/* Keep content_call so mqueue VOICEAI_CONTENT (from
+		 * trace_flush below and trailing WS turns during the grace
+		 * window) can still emit against this call after
+		 * current_call is cleared. */
+		content_call_set(call);
+
+		/* Emit the last coalesced turn now (queued); do not write
+		 * the artifact yet -- WS stays up and final transcripts /
+		 * tool events often arrive after hangup. */
 		trace_flush();
-		trace_write_file();
+		tmr_start(&calls_state.trace_write_tmr, TRACE_WRITE_GRACE_MS,
+			trace_write_tmr_handler, NULL);
 
 		/* Stop audio threads before marking call as inactive */
 		audio_stop_threads();
@@ -339,6 +399,8 @@ int calls_init(void)
 
 	/* Initialize state */
 	calls_state.shutting_down = false;
+	calls_state.content_call = NULL;
+	tmr_init(&calls_state.trace_write_tmr);
 
 	/* Initialize message queue for thread-safe call operations */
 	err = mqueue_alloc(&calls_state.mq, mqueue_handler, NULL);
@@ -370,12 +432,16 @@ void calls_close(void)
 	/* Unregister event handler first to stop receiving new events */
 	bevent_unregister(event_handler);
 
+	/* Persist any pending trace before tearing down */
+	trace_finalize_write();
+
 	/* Clean up message queue */
 	calls_state.mq = mem_deref(calls_state.mq);
 
 	/* Clear call state */
 	g_oairt.call_active = false;
 	g_oairt.current_call = NULL;
+	content_call_clear();
 
 	DEBUG_INFO("Call management closed\n");
 }
@@ -567,52 +633,62 @@ int calls_transfer(const char *destination)
 
 
 /**
- * Perform an HTTP API call - thread-safe
+ * Synchronous HTTP helper for the api_call tool.
  *
- * @param method         HTTP method (POST, PUT, GET, UPDATE, DELETE)
- * @param content_type   Content-Type header value
- * @param auth_type      Authentication type (basic, bearer)
- * @param auth_username  Username for basic auth or token for bearer auth
- * @param auth_password  Password for basic auth
- * @param body           HTTP request body
- * @param output         Output: Response body (allocated, must be freed)
- * @return 0 if success, error code otherwise
+ * http_reqconn keeps an internal mem_ref until its resp_handler runs, so a
+ * late callback can outlive this function after a timeout. ad/sync are
+ * therefore heap-allocated: on timeout we cancel (stop writing into the
+ * caller's output), hand ownership to the callback via free_on_complete, and
+ * return ETIMEDOUT without destroying the sync the callback still needs.
  */
 struct api_call_data {
-	char *method;
-	char *content_type;
-	char *auth_type;
-	char *auth_username;
-	char *auth_password;
-	char *body;
 	char **output;
-	struct sync_obj *sync;
+	struct {
+		mtx_t mtx;
+		cnd_t cnd;
+		bool done;
+		bool cancelled;
+		/* When true, api_call_resph frees this object. */
+		bool free_on_complete;
+		bool mtx_ok;
+		bool cnd_ok;
+	} sync;
 	int err;
 };
 
-struct sync_obj {
-	mtx_t mtx;
-	cnd_t cnd;
-	bool done;
-};
+static void api_call_data_destructor(void *arg)
+{
+	struct api_call_data *ad = arg;
+
+	if (ad->sync.cnd_ok)
+		cnd_destroy(&ad->sync.cnd);
+	if (ad->sync.mtx_ok)
+		mtx_destroy(&ad->sync.mtx);
+}
 
 static void api_call_resph(int err, const struct http_msg *msg, void *arg)
 {
 	struct api_call_data *ad = arg;
-	ad->err = err;
+	bool free_on_complete;
 
-	if (!err && msg && msg->mb && ad->output) {
-		size_t len = mbuf_get_left(msg->mb);
-		*ad->output = mem_zalloc(len + 1, NULL);
-		if (*ad->output) {
-			memcpy(*ad->output, mbuf_buf(msg->mb), len);
+	mtx_lock(&ad->sync.mtx);
+	if (!ad->sync.cancelled) {
+		ad->err = err;
+		if (!err && msg && msg->mb && ad->output) {
+			size_t len = mbuf_get_left(msg->mb);
+			*ad->output = mem_zalloc(len + 1, NULL);
+			if (*ad->output) {
+				memcpy(*ad->output, mbuf_buf(msg->mb), len);
+			}
 		}
 	}
+	ad->sync.done = true;
+	free_on_complete = ad->sync.free_on_complete;
+	cnd_signal(&ad->sync.cnd);
+	mtx_unlock(&ad->sync.mtx);
 
-	mtx_lock(&ad->sync->mtx);
-	ad->sync->done = true;
-	cnd_signal(&ad->sync->cnd);
-	mtx_unlock(&ad->sync->mtx);
+	if (free_on_complete)
+		mem_deref(ad);
 }
 
 int calls_api_call(const char *method, const char *uri,
@@ -623,11 +699,11 @@ int calls_api_call(const char *method, const char *uri,
 {
 	struct http_cli *cli = NULL;
 	struct http_reqconn *conn = NULL;
-	struct sync_obj sync;
-	struct api_call_data ad;
+	struct api_call_data *ad = NULL;
 	struct pl pl_met, pl_uri;
 	struct mbuf *mb_body = NULL;
-	bool mtx_ok = false, cnd_ok = false;
+	bool left_re = false;
+	bool orphaned = false;
 	int err;
 
 	if (!method || !uri || !output) return EINVAL;
@@ -636,22 +712,23 @@ int calls_api_call(const char *method, const char *uri,
 
 	re_thread_enter();
 
-	memset(&ad, 0, sizeof(ad));
-	memset(&sync, 0, sizeof(sync));
-	ad.output = output;
+	ad = mem_zalloc(sizeof(*ad), api_call_data_destructor);
+	if (!ad) {
+		err = ENOMEM;
+		goto out;
+	}
+	ad->output = output;
 
-	if (mtx_init(&sync.mtx, mtx_plain) != thrd_success) {
+	if (mtx_init(&ad->sync.mtx, mtx_plain) != thrd_success) {
 		err = ENOMEM;
 		goto out;
 	}
-	mtx_ok = true;
-	if (cnd_init(&sync.cnd) != thrd_success) {
+	ad->sync.mtx_ok = true;
+	if (cnd_init(&ad->sync.cnd) != thrd_success) {
 		err = ENOMEM;
 		goto out;
 	}
-	cnd_ok = true;
-	sync.done = false;
-	ad.sync = &sync;
+	ad->sync.cnd_ok = true;
 
 	err = http_client_alloc(&cli, net_dnsc(baresip_network()));
 	if (err) {
@@ -665,7 +742,7 @@ int calls_api_call(const char *method, const char *uri,
 	http_client_disable_verify_server(cli);
 #endif
 
-	err = http_reqconn_alloc(&conn, cli, api_call_resph, NULL, &ad);
+	err = http_reqconn_alloc(&conn, cli, api_call_resph, NULL, ad);
 	if (err) {
 		warning("openai_rt: http_reqconn_alloc failed: %m\n", err);
 		goto out;
@@ -752,10 +829,11 @@ int calls_api_call(const char *method, const char *uri,
 	/* Leave RE thread before waiting to allow RE event loop to process the
 	 * request */
 	re_thread_leave();
+	left_re = true;
 
 	DEBUG_INFO("calls_api_call: waiting for response...\n");
-	mtx_lock(&sync.mtx);
-	if (!sync.done) {
+	mtx_lock(&ad->sync.mtx);
+	if (!ad->sync.done) {
 		/* Wait against an absolute 10s deadline: cnd_wait() would
 		 * block forever if the HTTP callback never fires (e.g. a
 		 * network hang), so cnd_timedwait() (TIME_UTC based) returns
@@ -763,40 +841,58 @@ int calls_api_call(const char *method, const char *uri,
 		struct timespec ts;
 		timespec_get(&ts, TIME_UTC);
 		ts.tv_sec += 10;
-		while (!sync.done) {
-			int rc = cnd_timedwait(&sync.cnd, &sync.mtx, &ts);
+		while (!ad->sync.done) {
+			int rc = cnd_timedwait(&ad->sync.cnd, &ad->sync.mtx,
+				&ts);
 			if (rc == thrd_timedout) {
-				warning("openai_rt: calls_api_call timed out "
-					"after 10s\n");
-				ad.err = ETIMEDOUT;
+				/* timedwait can lose a race with the
+				 * signal; only orphan if still pending. */
+				if (!ad->sync.done) {
+					warning("openai_rt: calls_api_call "
+						"timed out after 10s\n");
+					ad->err = ETIMEDOUT;
+					ad->sync.cancelled = true;
+					/* http_reqconn holds an internal
+					 * ref until resp_handler runs --
+					 * do not free ad here. */
+					ad->output = NULL;
+					ad->sync.free_on_complete = true;
+					orphaned = true;
+				}
 				break;
 			}
 			if (rc != thrd_success) {
-				warning("openai_rt: calls_api_call wait "
-					"failed\n");
-				ad.err = EPIPE;
+				if (!ad->sync.done) {
+					warning("openai_rt: calls_api_call "
+						"wait failed\n");
+					ad->err = EPIPE;
+					ad->sync.cancelled = true;
+					ad->output = NULL;
+					ad->sync.free_on_complete = true;
+					orphaned = true;
+				}
 				break;
 			}
 		}
 	}
-	mtx_unlock(&sync.mtx);
+	err = ad->err;
+	mtx_unlock(&ad->sync.mtx);
 
 	/* Re-enter RE thread for cleanup */
 	re_thread_enter();
+	left_re = false;
 
-	err = ad.err;
 	DEBUG_INFO("calls_api_call: request completed with error=%d\n", err);
 
 out:
 	mem_deref(conn);
 	mem_deref(cli);
 	mem_deref(mb_body);
-	if (cnd_ok)
-		cnd_destroy(&sync.cnd);
-	if (mtx_ok)
-		mtx_destroy(&sync.mtx);
+	if (!orphaned)
+		mem_deref(ad);
 
-	re_thread_leave();
+	if (!left_re)
+		re_thread_leave();
 
 	return err;
 }
