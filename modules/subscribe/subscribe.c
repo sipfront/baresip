@@ -34,7 +34,7 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 
 static void notify_event_emit(struct ua *ua, const struct sip_msg *msg)
 {
-	const struct sip_hdr *hdr_event = sip_msg_hdr(msg, SIP_HDR_EVENT);
+	const struct sip_hdr *hdr_event;
 	const struct sip_hdr *hdr_subs;
 	const struct sip_hdr *hdr_ctype;
 
@@ -42,11 +42,12 @@ static void notify_event_emit(struct ua *ua, const struct sip_msg *msg)
 	char *buf = NULL;
 	int err;
 
-	hdr_subs = sip_msg_hdr(msg, SIP_HDR_SUBSCRIPTION_STATE);
-	hdr_ctype = sip_msg_hdr(msg, SIP_HDR_CONTENT_TYPE);
-
 	if (!ua || !msg)
 		return;
+
+	hdr_event = sip_msg_hdr(msg, SIP_HDR_EVENT);
+	hdr_subs = sip_msg_hdr(msg, SIP_HDR_SUBSCRIPTION_STATE);
+	hdr_ctype = sip_msg_hdr(msg, SIP_HDR_CONTENT_TYPE);
 
 	err = odict_alloc(&od, 32);
 	if (err)
@@ -86,12 +87,15 @@ static void notify_handler(struct sip *sip, const struct sip_msg *msg,
 			   void *arg)
 {
 	struct subscription *sub = arg;
-	struct ua *ua = sub->ua;
+	struct ua *ua;
 
 	/* Accept everything for now */
 	(void) sip_treply(NULL, sip, msg, 200, "OK");
 
-	if (!sub || !ua)
+	if (!sub)
+		return;
+	ua = sub->ua;
+	if (!ua)
 		return;
 
 	/* Trigger NOTIFY event */
