@@ -40,7 +40,7 @@ REQUEST_BODY=$(cat <<EOF
   },
   "session": {
     "type": "realtime",
-    "model": "gpt-realtime",
+    "model": "gpt-realtime-2.1",
     "tool_choice": "none",
     "instructions": "${ESCAPED_PROMPT}",
     "output_modalities": ["audio"],

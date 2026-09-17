@@ -4,7 +4,7 @@
 #include "openai_rt.h"
 #include <re_base64.h>
 
-#define DEFAULT_OPENAI_MODEL "gpt-realtime"
+#define DEFAULT_OPENAI_MODEL "gpt-realtime-2.1"
 #define DEFAULT_GEMINI_MODEL "gemini-2.5-flash-native-audio-preview-09-2025"
 
 /* Base64 encoding wrapper for audio data */

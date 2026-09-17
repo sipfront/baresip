@@ -53,7 +53,7 @@ struct openai_rt {
 	char enabled_tools[256];
 	/* AI backend: "openai_realtime" or "gemini_live" */
 	char backend[64];
-	/* OpenAI realtime model (default: gpt-realtime) */
+	/* OpenAI realtime model (default: gpt-realtime-2.1) */
 	char openai_model[128];
 	/* Gemini model for both regular and ephemeral auth */
 	char gemini_model[128];

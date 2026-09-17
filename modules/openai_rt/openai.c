@@ -19,10 +19,9 @@
 #define OPENAI_API_HOST "api.openai.com"
 #define OPENAI_API_PORT 443
 #define OPENAI_API_PATH_BASE "/v1/realtime"
-#define OPENAI_MODEL_DEFAULT "gpt-realtime"
 /* Model used for input-audio (agent-under-test) transcription when
  * openai_rt_transcribe is enabled. */
-#define OPENAI_TRANSCRIBE_MODEL "whisper-1"
+#define OPENAI_TRANSCRIBE_MODEL "gpt-live-transcribe"
 
 /* Tool call definitions - centralized for consistency across */
 /* implementations */
@@ -247,8 +246,9 @@ static int openai_get_connection_info(char *address, size_t address_len,
 
 	*port = OPENAI_API_PORT;
 
-	model = str_isset(g_oairt.openai_model)
-		? g_oairt.openai_model : OPENAI_MODEL_DEFAULT;
+	/* read_config() always populates this (DEFAULT_OPENAI_MODEL in
+	 * utils.c), so it is the single source of truth for the model. */
+	model = g_oairt.openai_model;
 	n = re_snprintf(path, path_len, "%s?model=%s",
 		OPENAI_API_PATH_BASE, model);
 	if (n < 0 || (size_t)n >= path_len) {

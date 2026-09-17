@@ -53,7 +53,7 @@ The module requires the following configuration parameters in your baresip confi
 - `openai_rt_api_key` - OpenAI API key (preferably an ephemeral token from `/v1/realtime/client_secrets`)
 - `openai_rt_prompt` - The instructions for OpenAI used in `session.update` and `response.create`
 - `openai_rt_wait_for_greeting` - Whether OpenAI is instructed to actively start the conversation bu sending a `response.create` message to OpenAI 
-- `openai_rt_openai_model` - OpenAI realtime model name (default: `gpt-realtime`)
+- `openai_rt_openai_model` - OpenAI realtime model name (default: `gpt-realtime-2.1`)
 - `openai_rt_gemini_model` - Gemini model name for both regular and ephemeral auth keys (default: `gemini-2.5-flash-native-audio-preview-09-2025`)
 
 ### Audio Settings
@@ -88,7 +88,7 @@ curl -X POST https://api.openai.com/v1/realtime/client_secrets \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-realtimew",
+    "model": "gpt-realtime-2.1",
     "voice": "alloy",
     "instructions": "You are a helpful assistant..."
   }'
