@@ -30,6 +30,10 @@ static struct {
 	struct mqueue *mq;
 	/* Flag to prevent operations during shutdown */
 	bool shutting_down;
+	/* Set on UA_EVENT_SHUTDOWN: the core is tearing down its calls, so
+	 * no new call reference may be taken and no call-bound event may be
+	 * emitted from here on (the call objects are about to be freed). */
+	bool ua_shutdown;
 	/* mem_ref'd call used for VOICEAI_CONTENT after current_call is
 	 * cleared (mqueue runs after the CALL_CLOSED handler returns). */
 	struct call *content_call;
@@ -41,6 +45,10 @@ static void trace_finalize_write(void);
 static void content_call_set(struct call *call)
 {
 	if (calls_state.content_call == call)
+		return;
+	/* After SHUTDOWN the UA flushes its call list regardless of our
+	 * reference; never re-acquire a call we would later deref stale. */
+	if (calls_state.ua_shutdown)
 		return;
 	/* Switching calls: finish the previous call's deferred write first
 	 * so trailing VOICEAI_CONTENT still targets the right call and the
@@ -188,9 +196,13 @@ static void mqueue_handler(int id, void *data, void *arg)
 	case MQ_VOICEAI_CONTENT:
 		{
 			char *payload = (char *)data;
-			struct call *call = g_oairt.current_call
-				? g_oairt.current_call
-				: calls_state.content_call;
+			/* Once the UA is shutting down the call objects
+			 * are being destroyed; do not touch them. */
+			struct call *call = calls_state.ua_shutdown
+				? NULL
+				: (g_oairt.current_call
+					? g_oairt.current_call
+					: calls_state.content_call);
 
 			DEBUG_INFO("mqueue_handler: "
 				"Emitting VOICEAI_CONTENT %s\n", payload);
@@ -218,6 +230,18 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 {
 	struct call *call = bevent_get_call(event);
 	(void)arg;
+
+	/* baresip is going down. The UA is about to list_flush() its calls,
+	 * which destroys them regardless of the reference held in
+	 * content_call (the call is only unlinked in its destructor). Persist
+	 * the trace and drop our ref NOW, while the call object is still
+	 * valid; deferring to calls_close() would mem_deref a freed call. */
+	if (ev == UA_EVENT_SHUTDOWN) {
+		DEBUG_INFO("UA shutdown - finalizing conversation trace\n");
+		calls_state.ua_shutdown = true;
+		trace_finalize_write();
+		return;
+	}
 
 	if (!call) {
 		/*DEBUG_INFO("No call object in event %d\n", ev); */
@@ -399,6 +423,7 @@ int calls_init(void)
 
 	/* Initialize state */
 	calls_state.shutting_down = false;
+	calls_state.ua_shutdown = false;
 	calls_state.content_call = NULL;
 	tmr_init(&calls_state.trace_write_tmr);
 

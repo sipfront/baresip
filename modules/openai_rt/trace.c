@@ -182,7 +182,7 @@ static void emit_turn(const char *role, const char *text)
 {
 	const char *side = (role && strcmp(role, TRACE_ROLE_SELF) == 0)
 		? "self" : "other";
-	DEBUG_INFO("trace: turn %s: %.500s\n", role, text);
+	DEBUG_INFO("trace: turn %s: %s\n", role, text);
 	calls_queue_voiceai_content(side, text);
 }
 
@@ -236,7 +236,15 @@ void trace_add_turn(const char *role, const char *text)
 	if (last && !last->emitted && strcmp(last->role, role) == 0 &&
 	    now >= last->end_ms && (now - last->end_ms) <= TRACE_COALESCE_MS) {
 		char *merged = NULL;
-		if (re_sdprintf(&merged, "%s%s", last->text, text) == 0 &&
+		size_t l = str_len(last->text);
+		/* Whole sentences from separate output items (OpenAI can
+		 * emit several per response) need a separator; sub-word
+		 * fragments (Gemini) must not get one. Only add a space
+		 * after sentence-ending punctuation. */
+		const char *sep = (l && strchr(".!?", last->text[l - 1]) &&
+				   text[0] != ' ') ? " " : "";
+		if (re_sdprintf(&merged, "%s%s%s", last->text, sep,
+				text) == 0 &&
 		    merged) {
 			mem_deref(last->text);
 			last->text = merged;

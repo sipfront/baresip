@@ -330,6 +330,54 @@ bool ai_model_is_tool_enabled(const char *tool_name, const char *enabled_tools)
 }
 
 /**
+ * Warn about configured tool names that no backend knows. Such entries are
+ * otherwise dropped silently and the model simply never gets the tool.
+ */
+void ai_model_check_enabled_tools(const char *enabled_tools)
+{
+	const char *p = enabled_tools;
+
+	if (!p || !*p)
+		return;
+
+	while (*p) {
+		const char *start, *end;
+		size_t i, len;
+		bool known = false;
+
+		while (*p == ' ' || *p == '\t' || *p == ',')
+			++p;
+		if (!*p)
+			break;
+		start = p;
+		while (*p && *p != ',')
+			++p;
+		end = p;
+		while (end > start && (end[-1] == ' ' || end[-1] == '\t'))
+			--end;
+		len = (size_t)(end - start);
+		if (!len)
+			continue;
+
+		for (i = 0; i < AI_AVAILABLE_TOOLS_COUNT; i++) {
+			const struct ai_tool_call *tool =
+				AI_AVAILABLE_TOOLS[i];
+			if (tool && tool->name &&
+			    strlen(tool->name) == len &&
+			    strncmp(tool->name, start, len) == 0) {
+				known = true;
+				break;
+			}
+		}
+		if (!known) {
+			warning("openai_rt: openai_rt_tool_calls names unknown"
+				" tool '%b' -- it will NOT be offered to the"
+				" model\n", start, len);
+		}
+	}
+}
+
+/**
  * Build tools JSON array for session update
  */
 int ai_model_build_tools_json(const char *enabled_tools, char **tools_json)
@@ -515,7 +563,7 @@ static int openai_build_session_update(const char *prompt, char **json_msg)
 		return err;
 	}
 
-	info("openai_rt: Session update built: %s\n", *json_msg);
+	DEBUG_INFO("Session update built (%zu bytes)\n", str_len(*json_msg));
 	return 0;
 }
 
@@ -651,6 +699,47 @@ static struct json_object *get_json_object_field(struct json_object *obj,
 	return field_obj;
 }
 
+/* Server events we receive on every turn but have no use for: lifecycle
+ * markers whose payload is fully covered by the terminal events we do handle
+ * (transcript .done / .completed, output_item.done, response.done). Kept out
+ * of the log so genuinely unexpected event types stand out. */
+static bool openai_event_is_ignored(const char *type)
+{
+	static const char *const ignored[] = {
+		"session.created",
+		"input_audio_buffer.speech_stopped",
+		"input_audio_buffer.committed",
+		"input_audio_buffer.cleared",
+		"conversation.item.created",
+		"conversation.item.added",
+		"conversation.item.done",
+		"conversation.item.truncated",
+		"conversation.item.input_audio_transcription.delta",
+		"conversation.item.input_audio_transcription.segment",
+		"response.created",
+		"response.output_item.added",
+		"response.content_part.added",
+		"response.content_part.done",
+		"response.output_audio_transcript.delta",
+		"response.audio_transcript.delta",
+		"response.output_audio.done",
+		"response.audio.done",
+		"response.function_call_arguments.delta",
+		"response.function_call_arguments.done",
+		"rate_limits.updated",
+		"output_audio_buffer.started",
+		"output_audio_buffer.stopped",
+		"output_audio_buffer.cleared",
+	};
+	size_t i;
+
+	for (i = 0; i < sizeof(ignored) / sizeof(ignored[0]); i++) {
+		if (strcmp(type, ignored[i]) == 0)
+			return true;
+	}
+	return false;
+}
+
 /* Parse OpenAI message and invoke appropriate callbacks */
 static int openai_parse_message(const char *json_str,
 		void (*audio_delta_cb)(const char *base64_audio, void *arg),
@@ -736,6 +825,31 @@ static int openai_parse_message(const char *json_str,
 		struct json_object *response_obj = get_json_object_field(root,
 			"response",
 			"response.done");
+		struct json_object *status = NULL;
+
+		/* A response that did not complete (failed, cancelled,
+		 * incomplete) means the model produced no or partial audio;
+		 * surface why instead of silently moving on. */
+		if (response_obj &&
+		    json_object_object_get_ex(response_obj, "status",
+					      &status) &&
+		    json_object_is_type(status, json_type_string) &&
+		    strcmp(json_object_get_string(status), "completed") != 0) {
+			struct json_object *details = NULL;
+			json_object_object_get_ex(response_obj,
+						  "status_details", &details);
+			warning("openai_rt: response.done with status '%s':"
+				" %s\n",
+				json_object_get_string(status),
+				details ? json_object_to_json_string(details)
+					: "(no details)");
+		}
+
+		/* The response is over, so our own turn is complete: emit it
+		 * now rather than waiting for the far end's next transcript
+		 * (which could be many seconds away, or never on hangup). */
+		trace_flush();
+
 		if (response_obj && response_done_cb) {
 			const char *response_json = json_object_to_json_string(
 				response_obj);
@@ -755,7 +869,20 @@ static int openai_parse_message(const char *json_str,
 		    json_object_is_type(t, json_type_string)) {
 			trace_add_turn(TRACE_ROLE_OTHER,
 				json_object_get_string(t));
+			/* OpenAI delivers one whole utterance per committed
+			 * input item, nothing more will be appended: emit
+			 * the turn right away. */
+			trace_flush();
 		}
+	}
+	else if (strcmp(type,
+		"conversation.item.input_audio_transcription.failed") == 0) {
+		/* The far end's utterance is lost from the trace; make that
+		 * visible instead of silently dropping a turn. */
+		struct json_object *e = NULL;
+		json_object_object_get_ex(root, "error", &e);
+		warning("openai_rt: input audio transcription failed: %s\n",
+			e ? json_object_to_json_string(e) : "(no error info)");
 	}
 	else if (strcmp(type, "response.output_audio_transcript.done") == 0 ||
 		strcmp(type, "response.audio_transcript.done") == 0) {
@@ -778,7 +905,7 @@ static int openai_parse_message(const char *json_str,
 				json_object_to_json_string(error_obj));
 		}
 	}
-	else {
+	else if (!openai_event_is_ignored(type)) {
 		DEBUG_INFO("openai_rt: Unhandled message type: %s\n", type);
 	}
 

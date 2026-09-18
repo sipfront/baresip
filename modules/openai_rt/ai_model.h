@@ -71,6 +71,12 @@ bool ai_model_is_tool_enabled(const char *tool_name,
 			      const char *enabled_tools);
 
 /**
+ * Log a warning for every entry in the comma-separated list that does not
+ * name a known tool (such entries are silently ignored otherwise).
+ */
+void ai_model_check_enabled_tools(const char *enabled_tools);
+
+/**
  * AI Model Interface Structure
  *
  * This structure defines the functions that must be implemented

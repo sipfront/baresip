@@ -2,6 +2,7 @@
  * @file utils.c  OpenAI Realtime API - Utility functions with fixed base64
  */
 #include "openai_rt.h"
+#include "ai_model.h"
 #include <re_base64.h>
 
 #define DEFAULT_OPENAI_MODEL "gpt-realtime-2.1"
@@ -189,7 +190,17 @@ int json_escape(char **dst, const char *src)
 
 int read_config(void)
 {
+	struct pl prompt_pl;
 
+	/* conf_get_str() truncates silently; a cut prompt loses the tail of
+	 * the task (control-token rules etc.) and the model misbehaves, so
+	 * make that loud. */
+	if (!conf_get(conf_cur(), "openai_rt_prompt", &prompt_pl) &&
+	    prompt_pl.l >= sizeof(g_oairt.prompt)) {
+		warning("openai_rt: openai_rt_prompt is %zu bytes, exceeds "
+			"the %zu byte limit and will be TRUNCATED\n",
+			prompt_pl.l, sizeof(g_oairt.prompt) - 1);
+	}
 	conf_get_str(conf_cur(), "openai_rt_prompt",
 		     g_oairt.prompt, sizeof(g_oairt.prompt));
 	conf_get_str(conf_cur(), "openai_rt_api_key",
@@ -201,6 +212,7 @@ int read_config(void)
 	(void)conf_get_str(conf_cur(), "openai_rt_tool_calls",
 			   g_oairt.enabled_tools,
 			   sizeof(g_oairt.enabled_tools));
+	ai_model_check_enabled_tools(g_oairt.enabled_tools);
 	conf_get_str(conf_cur(), "openai_rt_backend",
 		     g_oairt.backend, sizeof(g_oairt.backend));
 	conf_get_str(conf_cur(), "openai_rt_openai_model",

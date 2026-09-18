@@ -52,7 +52,55 @@ static void execute_tool_call(const char *call_id,
 	 { NULL, NULL, 0, 0, 0, NULL, 0 }  /* Terminator */
  };
 
- /* Message destructor */
+ /* Log an inbound server event. High-frequency streaming events (audio
+ * chunks, transcript deltas) are skipped entirely: they are not readable and
+ * would make up most of the log. The session echo is logged in full because
+ * it is the only place the server's effective configuration is visible;
+ * everything else is truncated. NB: libre's printf ignores string precision
+ * (%.200s pads instead of truncating), so length-bounded %b is used. */
+#define WS_LOG_BODY_MAX 1024
+static void ws_log_received(const char *in, size_t len)
+{
+	static const char *const noisy[] = {
+		/* OpenAI */
+		"\"type\":\"response.output_audio.delta\"",
+		"\"type\":\"response.audio.delta\"",
+		"\"type\":\"response.output_audio_transcript.delta\"",
+		"\"type\":\"response.audio_transcript.delta\"",
+		"\"type\":\"conversation.item.input_audio_transcription"
+			".delta\"",
+		/* Gemini */
+		"\"audioBytes\"",
+		"\"serverContent\"",
+	};
+	size_t i;
+	bool full;
+
+	if (!in || !len)
+		return;
+
+	/* libwebsockets guarantees a NUL after the payload, but bound the
+	 * scans to be safe with %b below anyway. */
+	for (i = 0; i < sizeof(noisy) / sizeof(noisy[0]); i++) {
+		if (strstr(in, noisy[i]))
+			return;
+	}
+
+	full = strstr(in, "\"type\":\"session.created\"") ||
+	       strstr(in, "\"type\":\"session.updated\"") ||
+	       strstr(in, "\"type\":\"error\"") ||
+	       strstr(in, "\"setupComplete\"");
+
+	if (full || len <= WS_LOG_BODY_MAX) {
+		info("openai_rt: rx event: %b\n", in, len);
+	}
+	else {
+		info("openai_rt: rx event: %b... (%zu bytes)\n",
+		     in, (size_t)WS_LOG_BODY_MAX, len);
+	}
+}
+
+/* Message destructor */
  static void ws_message_destructor(void *arg)
  {
 	 struct ws_message *msg = arg;
@@ -844,31 +892,7 @@ static void handle_response_done_cb(const char *response_json, void *arg)
 
 	case LWS_CALLBACK_CLIENT_RECEIVE:
 		{
-			/* Check if this message contains audio data */
-			bool has_audio = (len > 0 &&
-				(strstr((const char *)in,
-					"\"audio\"") != NULL ||
-				 strstr((const char *)in,
-					"\"audioBytes\"") != NULL ||
-				 strstr((const char *)in,
-					"\"serverContent\"")
-					!= NULL));
-
-			if (has_audio) {
-				/* info("[AUDIO RX] WebSocket received message
-				 * with audio data (%zu bytes)\n", len); */
-			}
-			else {
-				info("openai_rt: WebSocket received %zu"
-				     " bytes\n", len);
-			}
-
-			if (len > 0 && !has_audio) {
-				info("openai_rt: Received message from AI"
-				     " model: %.200s%s\n",
-					 (const char *)in,
-						len > 200 ? "..." : "");
-			}
+			ws_log_received((const char *)in, len);
 
 			if (len > 0 && g_oairt.ws_state == WS_CONNECTED) {
 			   struct ai_model *model = get_ai_model();
