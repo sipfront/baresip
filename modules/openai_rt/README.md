@@ -51,7 +51,7 @@ Every time the websocket connection receives a `response.output_audio.delta` mes
 The module requires the following configuration parameters in your baresip config file:
 
 - `openai_rt_api_key` - OpenAI API key (preferably an ephemeral token from `/v1/realtime/client_secrets`)
-- `openai_rt_prompt` - The instructions for OpenAI used in `session.update` and `response.create`
+- `openai_rt_prompt` - The model instructions. With an ephemeral `ek_` key (the normal case) the instructions are already part of the session minted by `/v1/realtime/client_secrets`, so the OpenAI backend does not resend them in `session.update`; with a plain `sk-` key they are sent. The Gemini backend always sends them in its setup message.
 - `openai_rt_wait_for_greeting` - Whether OpenAI is instructed to actively start the conversation bu sending a `response.create` message to OpenAI 
 - `openai_rt_openai_model` - OpenAI realtime model name (default: `gpt-realtime-2.1`)
 - `openai_rt_gemini_model` - Gemini model name for both regular and ephemeral auth keys (default: `gemini-2.5-flash-native-audio-preview-09-2025`)

@@ -505,17 +505,43 @@ int ai_model_build_tools_json(const char *enabled_tools, char **tools_json)
 	return 0;
 }
 
+/* An ephemeral client secret (ek_...) is minted by the platform via
+ * /v1/realtime/client_secrets together with the complete session config,
+ * instructions included. Resending the prompt from here would only replace
+ * that copy with ours (identical at best, truncated or stale at worst), and
+ * a mid-setup instructions swap is one more thing the model has to reconcile
+ * before the first turn. With a plain API key (sk-...) there is no
+ * pre-configured session, so the prompt has to come from us. */
+static bool openai_session_has_instructions(void)
+{
+	return strncmp(g_oairt.api_key, "ek_", 3) == 0;
+}
+
 static int openai_build_session_update(const char *prompt, char **json_msg)
 {
 	char *escaped_prompt = NULL;
+	char *instructions_block = NULL;
 	int err;
 
 	if (!prompt || !json_msg) {
 		return EINVAL;
 	}
 
-	/* Escape JSON special characters in the prompt */
-	err = json_escape(&escaped_prompt, prompt);
+	if (openai_session_has_instructions()) {
+		DEBUG_INFO("Ephemeral session key: instructions already set at"
+			   " token creation, not resending the prompt\n");
+		err = str_dup(&instructions_block, "");
+	}
+	else {
+		/* Escape JSON special characters in the prompt */
+		err = json_escape(&escaped_prompt, prompt);
+		if (!err) {
+			err = re_sdprintf(&instructions_block,
+					  "\"instructions\": \"%s\",",
+					  escaped_prompt);
+		}
+		mem_deref(escaped_prompt);
+	}
 	if (err) {
 		return err;
 	}
@@ -525,7 +551,7 @@ static int openai_build_session_update(const char *prompt, char **json_msg)
 	err = ai_model_build_tools_json(g_oairt.enabled_tools, &tools_json);
 	if (err) {
 		warning("openai_rt: Failed to build tools JSON: %m\n", err);
-		mem_deref(escaped_prompt);
+		mem_deref(instructions_block);
 		return err;
 	}
 
@@ -538,13 +564,16 @@ static int openai_build_session_update(const char *prompt, char **json_msg)
 			"{\"model\":\"" OPENAI_TRANSCRIBE_MODEL "\"}}}"
 		: "";
 
-	/* Build session update JSON with tools */
+	/* Build session update JSON with tools. The instructions block is
+	 * empty for ephemeral sessions (see openai_session_has_instructions);
+	 * tools and transcription are always ours to set, the token is minted
+	 * with tool_choice "none". */
 	static const char *session_update_template =
 		"{"
 			"\"type\": \"session.update\","
 			"\"session\": {"
 				"\"type\": \"realtime\","
-				"\"instructions\": \"%s\","
+				"%s"
 				"\"tool_choice\": \"auto\","
 				"\"tools\": %s"
 				"%s"
@@ -553,10 +582,10 @@ static int openai_build_session_update(const char *prompt, char **json_msg)
 
 	err = re_sdprintf(json_msg,
 		session_update_template,
-		escaped_prompt,
+		instructions_block,
 		tools_json,
 		audio_block);
-	mem_deref(escaped_prompt);
+	mem_deref(instructions_block);
 	mem_deref(tools_json);
 
 	if (err) {
