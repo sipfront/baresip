@@ -9,6 +9,7 @@ ENDPOINT="${BASE_URL}/v1/realtime/client_secrets"
 # Default values (can be overridden via environment variables)
 PROMPT="${OPENAI_PROMPT:-Be a friendly assistant}"
 VOICE="${OPENAI_VOICE:-sage}"
+MODEL="${OPENAI_MODEL:-gpt-realtime-2.1}"
 TURN_DETECTION="${OPENAI_TURN_DETECTION:-server_vad}"
 
 # Check if API key is set
@@ -40,7 +41,7 @@ REQUEST_BODY=$(cat <<EOF
   },
   "session": {
     "type": "realtime",
-    "model": "gpt-realtime-2.1",
+    "model": "${MODEL}",
     "tool_choice": "none",
     "instructions": "${ESCAPED_PROMPT}",
     "output_modalities": ["audio"],
@@ -140,8 +141,11 @@ if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
     echo "Success! Ephemeral client secret created."
     echo ""
     echo "Ephemeral Key: $TOKEN"
+    echo "Model: $MODEL"
     echo ""
-    echo "You can use this ephemeral key as your OPENAI_API_KEY for the WebSocket connection."
+    echo "Use this key as openai_rt_api_key. The model is bound to the"
+    echo "token (mint with gpt-realtime-2.1 for that model). For sk- keys,"
+    echo "openai_rt_openai_model selects the WebSocket ?model= param."
     echo "The key expires 3600 seconds (1 hour) after creation."
 else
     echo "Error! HTTP Status: ${HTTP_CODE}"

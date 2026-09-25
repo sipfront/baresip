@@ -232,7 +232,6 @@ static void openai_close(void)
 static int openai_get_connection_info(char *address, size_t address_len,
 		int *port, char *path, size_t path_len)
 {
-	const char *model;
 	int n;
 
 	if (!address || !port || !path) {
@@ -246,11 +245,19 @@ static int openai_get_connection_info(char *address, size_t address_len,
 
 	*port = OPENAI_API_PORT;
 
-	/* read_config() always populates this (DEFAULT_OPENAI_MODEL in
-	 * utils.c), so it is the single source of truth for the model. */
-	model = g_oairt.openai_model;
-	n = re_snprintf(path, path_len, "%s?model=%s",
-		OPENAI_API_PATH_BASE, model);
+	/* Ephemeral client secrets (ek_...) pin the model at mint time.
+	 * Passing ?model= that differs from the token yields invalid_model.
+	 * Omit the query param for ek_ so the connection uses the token's
+	 * bound model (mint with gpt-realtime-2.1 via client_secrets /
+	 * openai_create_token.sh). For sk- keys the model is selected here. */
+	if (str_isset(g_oairt.api_key) &&
+	    !strncmp(g_oairt.api_key, "ek_", 3)) {
+		n = re_snprintf(path, path_len, "%s", OPENAI_API_PATH_BASE);
+	}
+	else {
+		n = re_snprintf(path, path_len, "%s?model=%s",
+			OPENAI_API_PATH_BASE, g_oairt.openai_model);
+	}
 	if (n < 0 || (size_t)n >= path_len) {
 		return EOVERFLOW;
 	}

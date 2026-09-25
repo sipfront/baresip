@@ -81,16 +81,28 @@ module              auresamp.so
 
 ## Session Setup
 
-For best results, create an ephemeral token instead of using your main API key:
+For best results, create an ephemeral token instead of using your main API key.
+Prefer `./modules/openai_rt/openai_create_token.sh`, or the GA `client_secrets` shape below.
+
+With an `ek_` key the model is taken from the token (baresip does not pass
+`?model=` on the WebSocket URL). Mint with `gpt-realtime-2.1` to use that model.
+With a plain `sk-` key, `openai_rt_openai_model` (default `gpt-realtime-2.1`) is
+sent as the URL query parameter.
 
 ```bash
 curl -X POST https://api.openai.com/v1/realtime/client_secrets \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-realtime-2.1",
-    "voice": "alloy",
-    "instructions": "You are a helpful assistant..."
+    "expires_after": { "anchor": "created_at", "seconds": 3600 },
+    "session": {
+      "type": "realtime",
+      "model": "gpt-realtime-2.1",
+      "instructions": "You are a helpful assistant...",
+      "audio": {
+        "output": { "voice": "alloy" }
+      }
+    }
   }'
 ```
 
