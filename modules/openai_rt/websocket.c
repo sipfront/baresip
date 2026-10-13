@@ -238,7 +238,12 @@ static struct {
 	 * model waits for it), across a reconnect it is dropped (new
 	 * conversation, the call_id is unknown there). */
 	unsigned epoch;
-} tool_batch = { PTHREAD_MUTEX_INITIALIZER, 0, false, 0, 0, false, 0 };
+	/* Bumped only at SIP call boundaries. Queued call actions (hangup,
+	 * DTMF, transfer) are validated against this one: a WebSocket
+	 * reconnect bumps gen but must not invalidate an action for a
+	 * call that is still up. */
+	unsigned call_gen;
+} tool_batch = { PTHREAD_MUTEX_INITIALIZER, 0, false, 0, 0, false, 0, 0 };
 
 /* Generation and call of the tool execution running on this thread. Set
  * at the dispatcher entry of execute_tool_call() on the I/O thread and
@@ -250,10 +255,38 @@ static struct {
 static _Thread_local unsigned tool_exec_gen;
 static _Thread_local struct call *tool_exec_call;
 static _Thread_local unsigned tool_exec_epoch;
+static _Thread_local unsigned tool_exec_call_gen;
 
-unsigned tool_exec_generation(void)
+unsigned tool_exec_call_generation(void)
 {
-	return tool_exec_gen;
+	return tool_exec_call_gen;
+}
+
+unsigned tool_batch_current_call_gen(void)
+{
+	unsigned gen;
+
+	pthread_mutex_lock(&tool_batch.mtx);
+	gen = tool_batch.call_gen;
+	pthread_mutex_unlock(&tool_batch.mtx);
+
+	return gen;
+}
+
+/* Is the execution bound to this thread still the one the current call
+ * and session are waiting for? Checked before every side effect that is
+ * not routed through the RE thread (api_call, record_event); the call
+ * actions are validated there, atomically with the call lifecycle. */
+static bool tool_exec_is_current(void)
+{
+	bool ok;
+
+	pthread_mutex_lock(&tool_batch.mtx);
+	ok = tool_exec_gen == tool_batch.gen &&
+	     tool_exec_epoch == tool_batch.epoch;
+	pthread_mutex_unlock(&tool_batch.mtx);
+
+	return ok;
 }
 
 void tool_batch_note_response_created(void)
@@ -334,6 +367,7 @@ bool tool_batch_begin(size_t n)
 		 * them again per callback would let a reset in between
 		 * relabel an old tool as belonging to the next call. */
 		tool_exec_gen = tool_batch.gen;
+		tool_exec_call_gen = tool_batch.call_gen;
 		tool_exec_call = g_oairt.current_call;
 	}
 	pthread_mutex_unlock(&tool_batch.mtx);
@@ -407,6 +441,18 @@ void tool_batch_reset(void)
 	tool_batch.gen++;
 	tool_batch_purge_stale_locked();
 	pthread_mutex_unlock(&tool_batch.mtx);
+}
+
+/* SIP call boundary (established, closed, module close): invalidate the
+ * batch and every call action still queued or deferred for the old
+ * call. */
+void tool_batch_call_boundary(void)
+{
+	pthread_mutex_lock(&tool_batch.mtx);
+	tool_batch.call_gen++;
+	pthread_mutex_unlock(&tool_batch.mtx);
+
+	tool_batch_reset();
 }
 
 /* WebSocket disconnect: the OpenAI session is gone and the next connect
@@ -626,6 +672,7 @@ struct deferred_tool_call {
 	char *arguments;
 	unsigned gen;
 	unsigned epoch;
+	unsigned call_gen;
 	struct call *call;
 };
 
@@ -643,6 +690,7 @@ static void *deferred_tool_call_thread(void *arg)
 	tool_exec_gen = w->gen;
 	tool_exec_call = w->call;
 	tool_exec_epoch = w->epoch;
+	tool_exec_call_gen = w->call_gen;
 	if (g_oairt.call_active && tool_batch_current_gen() == w->gen) {
 		execute_tool_call(w->call_id, w->tool_name, w->arguments,
 			false);
@@ -687,6 +735,7 @@ static int defer_tool_call_until_tts_drained(const char *call_id,
 	w->gen = tool_exec_gen;
 	w->call = tool_exec_call;
 	w->epoch = tool_exec_epoch;
+	w->call_gen = tool_exec_call_gen;
 
 	err = pthread_create(&tid, NULL, deferred_tool_call_thread, w);
 	if (err) {
@@ -761,6 +810,7 @@ struct gemini_xfer_after_tts {
 	char *destination;
 	struct call *call;
 	unsigned gen;
+	unsigned call_gen;
 };
 
 static void *gemini_xfer_after_tts_thread(void *arg)
@@ -770,6 +820,7 @@ static void *gemini_xfer_after_tts_thread(void *arg)
 	wait_for_tts_drain();
 
 	tool_exec_gen = w->gen;
+	tool_exec_call_gen = w->call_gen;
 	if (g_oairt.call_active) {
 		int err = calls_transfer(w->call, w->destination);
 		if (err) {
@@ -801,6 +852,7 @@ static int start_transfer_after_tts(const char *destination)
 	}
 	w->call = g_oairt.current_call;
 	w->gen = tool_batch_current_gen();
+	w->call_gen = tool_batch_current_call_gen();
 
 	err = pthread_create(&tid, NULL, gemini_xfer_after_tts_thread, w);
 	if (err) {
@@ -953,7 +1005,15 @@ static void execute_tool_call(const char *call_id,
 	/* tool_exec_gen / tool_exec_call are already bound for this
 	 * thread: by tool_batch_begin() on the dispatch path, by the
 	 * worker for a deferred call, by handle_function_call_cb() for
-	 * a backend without batch accounting. */
+	 * a backend without batch accounting. The binding can have gone
+	 * stale since (an earlier callback of the same response may have
+	 * blocked while the call ended): answer instead of acting. */
+	if (!tool_exec_is_current()) {
+		info("openai_rt: tool '%s' not executed: call ended\n",
+		     name);
+		tool_call_answer_ended(call_id, name);
+		return;
+	}
 
 	/* Validate that the tool call is enabled in configuration */
 	if (!ai_model_is_tool_enabled(name, g_oairt.enabled_tools)) {
@@ -1101,7 +1161,14 @@ static void execute_tool_call(const char *call_id,
 		if (json_object_object_get_ex(args_obj, "body", &obj))
 			body = json_object_get_string(obj);
 
-		if (method && uri) {
+		if (method && uri && !tool_exec_is_current()) {
+			/* Re-checked right before the one side effect that
+			 * is neither call-bound nor validated on the RE
+			 * thread. */
+			send_function_call_output(call_id, name,
+						  "Error: the call has ended");
+		}
+		else if (method && uri) {
 			char *api_output = NULL;
 			int err = calls_api_call(method, uri,
 				content_type, auth_type, auth_username,
@@ -1239,6 +1306,7 @@ static void handle_function_call_cb(const char *call_id,
 		pthread_mutex_lock(&tool_batch.mtx);
 		tool_exec_gen = tool_batch.gen;
 		tool_exec_epoch = tool_batch.epoch;
+		tool_exec_call_gen = tool_batch.call_gen;
 		pthread_mutex_unlock(&tool_batch.mtx);
 		tool_exec_call = g_oairt.current_call;
 	}

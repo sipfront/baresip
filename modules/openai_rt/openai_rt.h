@@ -161,8 +161,13 @@ void websocket_isolate_call_end(void);
  * so the reused conversation is not left waiting for the output. */
 void tool_call_answer_ended(const char *call_id, const char *name);
 unsigned tool_batch_current_gen(void);
-/* Generation of the tool execution running on the calling thread. */
-unsigned tool_exec_generation(void);
+/* SIP call boundary: bumps the call generation and resets the batch. */
+void tool_batch_call_boundary(void);
+unsigned tool_batch_current_call_gen(void);
+/* Call generation of the tool execution running on the calling thread;
+ * queued call actions carry it and are dropped if it is no longer the
+ * current one. A WebSocket reconnect does not change it. */
+unsigned tool_exec_call_generation(void);
 void websocket_kick_session_setup(void);
 int queue_message_to_openai(const char *json_msg, size_t len,
 			    void (*callback)(void *arg, int err),

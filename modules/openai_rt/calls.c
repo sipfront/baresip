@@ -83,10 +83,11 @@ static void trace_write_tmr_handler(void *arg)
 
 /* Message queue handler - executes in RE main thread */
 /* A call-bound action queued for the RE thread. It carries the call the
- * tool was dispatched for and the tool-batch generation of that
- * execution; the handler checks both against the current call before it
- * acts. CALL_ESTABLISHED and CALL_CLOSED are processed on the same
- * thread, so the check cannot race with a call change, and a tool
+ * tool was dispatched for and the call generation of that execution
+ * (bumped at call boundaries only, not on a WebSocket reconnect); the
+ * handler checks both against the current call before it acts.
+ * CALL_ESTABLISHED and CALL_CLOSED are processed on the same thread, so
+ * the check cannot race with a call change, and a tool
  * worker that outlived its call (the WS stays up across calls) can no
  * longer hang up, key into or transfer the next one. */
 struct mq_action {
@@ -114,7 +115,7 @@ static int push_action(enum call_mq_events id, struct call *call,
 		return ENOMEM;
 
 	a->call = call;
-	a->gen = tool_exec_generation();
+	a->gen = tool_exec_call_generation();
 	a->key = key;
 	if (destination)
 		err = str_dup(&a->destination, destination);
@@ -140,7 +141,7 @@ static bool mq_action_is_current(const struct mq_action *a,
 	}
 
 	if (a->call != g_oairt.current_call ||
-	    a->gen != tool_batch_current_gen()) {
+	    a->gen != tool_batch_current_call_gen()) {
 		info("openai_rt: %s for a call that is no longer current,"
 		     " dropped\n", what);
 		return false;
@@ -388,6 +389,13 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 			DEBUG_INFO("Call "
 				"established - checking session readiness\n");
 
+			/* New call: invalidate everything the previous one
+			 * left behind BEFORE the call becomes visible as
+			 * active, or the I/O thread could stamp this call's
+			 * first response with the old generation and then
+			 * refuse its tools as stale. */
+			tool_batch_call_boundary();
+
 			/* Mark call as active */
 			g_oairt.call_active = true;
 			g_oairt.current_call = call;
@@ -404,9 +412,6 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 
 			/* Reset audio state for new call */
 			audio_reset_for_new_call();
-
-			/* No tool output of an earlier call may count here */
-			tool_batch_reset();
 
 			/* Kick session.update without blocking the UA event
 			 * chain (sndfile etc.) */
@@ -474,7 +479,7 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 		 * so a deferred worker still waiting on this call can neither
 		 * run against nor settle the next one. */
 		websocket_isolate_call_end();
-		tool_batch_reset();
+		tool_batch_call_boundary();
 		if (g_oairt.ws_state != WS_CONNECTED) {
 			g_oairt.session_ready = false;
 			g_oairt.session_cfg_applied = false;
@@ -544,7 +549,7 @@ void calls_close(void)
 	/* Clear call state */
 	g_oairt.call_active = false;
 	g_oairt.current_call = NULL;
-	tool_batch_reset();
+	tool_batch_call_boundary();
 	content_call_clear();
 
 	DEBUG_INFO("Call management closed\n");
