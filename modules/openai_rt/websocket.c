@@ -338,31 +338,47 @@ void websocket_isolate_call_end(void)
 	static const char cancel[] = "{\"type\":\"response.cancel\"}";
 	static const char clear[] =
 		"{\"type\":\"input_audio_buffer.clear\"}";
+	struct ws_message *m1, *m2;
 	bool active;
 
 	if (g_oairt.backend_type != AI_BACKEND_OPENAI_REALTIME)
 		return;
-	if (g_oairt.ws_state != WS_CONNECTED)
-		return;
-
-	pthread_mutex_lock(&tool_batch.mtx);
-	active = tool_batch.response_active;
-	tool_batch.response_active = false;
-	pthread_mutex_unlock(&tool_batch.mtx);
 
 	/* Always cancel: a response the server has started whose
 	 * response.created is still in transit is exactly the one that
 	 * would otherwise be attributed to the next call. The server
 	 * answers a cancel without an active response with the error
-	 * response_cancel_not_active, which the parser tolerates. */
+	 * response_cancel_not_active, which the parser tolerates.
+	 *
+	 * Checked and enqueued under the batch lock, in one critical
+	 * section with the disconnect path (tool_batch_new_session), so
+	 * these events are either on the queue a disconnect clears or
+	 * never enqueued; they cannot be retained into the next session
+	 * and cancel or clear a new call there. */
+	pthread_mutex_lock(&tool_batch.mtx);
+	active = tool_batch.response_active;
+	tool_batch.response_active = false;
+	if (g_oairt.ws_state != WS_CONNECTED) {
+		pthread_mutex_unlock(&tool_batch.mtx);
+		return;
+	}
+	m1 = ws_message_alloc(cancel, sizeof(cancel) - 1, NULL, NULL);
+	m2 = ws_message_alloc(clear, sizeof(clear) - 1, NULL, NULL);
+	if (m1)
+		ws_message_enqueue(m1);
+	if (m2)
+		ws_message_enqueue(m2);
+	pthread_mutex_unlock(&tool_batch.mtx);
+
+	if (!m1 || !m2)
+		warning("openai_rt: failed to queue call-end isolation:"
+			" %m\n", ENOMEM);
 	if (active)
 		info("openai_rt: call ended with a response in progress,"
 		     " cancelling it\n");
 	else
 		DEBUG_INFO("call ended, cancelling any response the server"
 			   " may have started\n");
-	queue_message_to_openai(cancel, sizeof(cancel) - 1, NULL, NULL);
-	queue_message_to_openai(clear, sizeof(clear) - 1, NULL, NULL);
 }
 
 bool tool_batch_begin(size_t n)

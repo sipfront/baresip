@@ -518,8 +518,27 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 		break;
 
 	case UA_EVENT_CALL_CLOSED:
+		{
+		/* Only the call tools are bound to ends the tool state: a
+		 * second call that merely rang and closed must not end the
+		 * established one's. */
+		const bool bound_call = !tool_batch_current_call() ||
+					tool_batch_current_call() == call;
+
 		info("openai_rt: Call CLOSED\n");
 		DEBUG_INFO("Call closed - queuing end event\n");
+
+		/* Invalidate the tool state FIRST, before any cleanup below
+		 * that can take time: from here on no tool can settle this
+		 * call's batch or queue a continuation, and the call is no
+		 * longer active. Done atomically under the batch lock. */
+		if (bound_call) {
+			tool_batch_call_boundary(false, NULL);
+		}
+		else {
+			info("openai_rt: closed call is not the one tools are"
+			     " bound to, keeping tool state\n");
+		}
 
 		/* Keep content_call so mqueue VOICEAI_CONTENT (from
 		 * trace_flush below and trailing WS turns during the grace
@@ -544,19 +563,10 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 		 * cancel what the model is still doing for it. A deferred
 		 * worker still waiting on this call can neither run against
 		 * nor settle the next one. */
-		/* Mark call as inactive (keep Gemini session if WS stays up),
-		 * atomically with the invalidation. Only for the call tools
-		 * are bound to: a second call that merely rang and closed
-		 * must not end the established one's tool state. */
-		if (!tool_batch_current_call() ||
-		    tool_batch_current_call() == call) {
-			tool_batch_call_boundary(false, NULL);
+		/* Now that nothing of this call can reach the queue any
+		 * more, cancel what the model is still doing for it. */
+		if (bound_call)
 			websocket_isolate_call_end();
-		}
-		else {
-			info("openai_rt: closed call is not the one tools are"
-			     " bound to, keeping tool state\n");
-		}
 		if (g_oairt.ws_state != WS_CONNECTED) {
 			g_oairt.session_ready = false;
 			g_oairt.session_cfg_applied = false;
@@ -569,6 +579,7 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 		/* Reset state */
 		g_oairt.speech_active = false;
 		break;
+		}
 
 	default:
 		/* Log other events for debugging */
