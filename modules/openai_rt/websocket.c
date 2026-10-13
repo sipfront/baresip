@@ -229,7 +229,10 @@ static struct {
 	 * the WS stays up across calls and the model answers the previous
 	 * conversation turn. */
 	unsigned response_gen;
-} tool_batch = { PTHREAD_MUTEX_INITIALIZER, 0, false, 0, 0 };
+	/* A response is in progress (response.created seen, no
+	 * response.done yet); cancelled at call end. */
+	bool response_active;
+} tool_batch = { PTHREAD_MUTEX_INITIALIZER, 0, false, 0, 0, false };
 
 /* Generation and call of the tool execution running on this thread. Set
  * at the dispatcher entry of execute_tool_call() on the I/O thread and
@@ -250,7 +253,49 @@ void tool_batch_note_response_created(void)
 {
 	pthread_mutex_lock(&tool_batch.mtx);
 	tool_batch.response_gen = tool_batch.gen;
+	tool_batch.response_active = true;
 	pthread_mutex_unlock(&tool_batch.mtx);
+}
+
+static void tool_batch_note_response_done(void)
+{
+	pthread_mutex_lock(&tool_batch.mtx);
+	tool_batch.response_active = false;
+	pthread_mutex_unlock(&tool_batch.mtx);
+}
+
+/* Called from the RE thread at CALL_CLOSED. The WS stays up for trailing
+ * transcripts, so the model could keep working on the ended call and
+ * its events could straddle the boundary into the next call. Cancel the
+ * response in progress (its function calls then come back without a
+ * completed status and are skipped) and drop uncommitted input audio so
+ * the server VAD cannot start a new response out of the old call's
+ * tail. Both messages are plain client events; nothing is bound to a
+ * generation here because they must go out regardless. */
+void websocket_isolate_call_end(void)
+{
+	static const char cancel[] = "{\"type\":\"response.cancel\"}";
+	static const char clear[] =
+		"{\"type\":\"input_audio_buffer.clear\"}";
+	bool active;
+
+	if (g_oairt.backend_type != AI_BACKEND_OPENAI_REALTIME)
+		return;
+	if (g_oairt.ws_state != WS_CONNECTED)
+		return;
+
+	pthread_mutex_lock(&tool_batch.mtx);
+	active = tool_batch.response_active;
+	tool_batch.response_active = false;
+	pthread_mutex_unlock(&tool_batch.mtx);
+
+	if (active) {
+		info("openai_rt: call ended with a response in progress,"
+		     " cancelling it\n");
+		queue_message_to_openai(cancel, sizeof(cancel) - 1, NULL,
+					NULL);
+	}
+	queue_message_to_openai(clear, sizeof(clear) - 1, NULL, NULL);
 }
 
 bool tool_batch_begin(size_t n)
@@ -402,20 +447,14 @@ static void tool_batch_mark_hangup(void)
 	pthread_mutex_unlock(&tool_batch.mtx);
 }
 
-static void tool_batch_output_settled(void)
+/* Called with tool_batch.mtx held: one output of the current batch has
+ * been handed to the queue (or could not be built; the model gets at
+ * most that one message per call either way). The last one queues the
+ * continuation under the same lock. */
+static void tool_batch_output_settled_locked(void)
 {
 	bool cont = false;
 
-	if (g_oairt.backend_type != AI_BACKEND_OPENAI_REALTIME)
-		return;
-
-	pthread_mutex_lock(&tool_batch.mtx);
-	if (tool_exec_gen != tool_batch.gen) {
-		pthread_mutex_unlock(&tool_batch.mtx);
-		DEBUG_INFO("tool output from a previous call ignored for"
-			   " batch accounting\n");
-		return;
-	}
 	if (tool_batch.pending)
 		tool_batch.pending--;
 	if (tool_batch.pending == 0) {
@@ -424,45 +463,64 @@ static void tool_batch_output_settled(void)
 	}
 	if (cont)
 		queue_continuation_locked();
-	pthread_mutex_unlock(&tool_batch.mtx);
 }
 
-/* Queue the output of one tool call. Always settles the call in the
- * batch, whether or not the message made it to the queue, so a failure
- * here never leaves the continuation hanging on an output that will
- * never come. */
+/* Queue the output of one tool call. On the OpenAI backend the output
+ * is bound to the generation of the execution that produced it and put
+ * on the queue, settled in the batch and (if last) followed by the
+ * continuation under one hold of tool_batch.mtx, so a call ending in
+ * between purges output and continuation together and a stale
+ * execution produces nothing at all. */
 static void send_function_call_output(const char *call_id,
 	const char *name, const char *output)
 {
 	struct ai_model *model = get_ai_model();
+	struct ws_message *msg = NULL;
 	char *json_msg = NULL;
 	int err;
 
 	if (!model || !model->build_function_call_output) {
 		warning("openai_rt: AI model not initialized\n");
-		goto settle;
 	}
-
-	err = model->build_function_call_output(call_id, name, output,
-		&json_msg);
-	if (err) {
-		warning("openai_rt: Failed to build"
-			" function_call_output: %m\n", err);
-		goto settle;
-	}
-
-	if (json_msg) {
-		err = queue_message_to_openai(json_msg, str_len(json_msg),
-			NULL, NULL);
+	else {
+		err = model->build_function_call_output(call_id, name, output,
+			&json_msg);
 		if (err) {
-			warning("openai_rt: Failed to queue"
+			warning("openai_rt: Failed to build"
 				" function_call_output: %m\n", err);
+		}
+		else if (json_msg && g_oairt.ws_state != WS_DISCONNECTED &&
+			 g_oairt.ws_state != WS_DISCONNECTING) {
+			msg = ws_message_alloc(json_msg, str_len(json_msg),
+					       NULL, NULL);
+			if (!msg) {
+				warning("openai_rt: Failed to queue"
+					" function_call_output: %m\n", ENOMEM);
+			}
 		}
 		mem_deref(json_msg);
 	}
 
-settle:
-	tool_batch_output_settled();
+	if (g_oairt.backend_type != AI_BACKEND_OPENAI_REALTIME) {
+		if (msg)
+			ws_message_enqueue(msg);
+		return;
+	}
+
+	pthread_mutex_lock(&tool_batch.mtx);
+	if (tool_exec_gen != tool_batch.gen) {
+		pthread_mutex_unlock(&tool_batch.mtx);
+		mem_deref(msg);
+		DEBUG_INFO("tool output of an ended call discarded\n");
+		return;
+	}
+	if (msg) {
+		msg->gen_bound = true;
+		msg->gen = tool_batch.gen;
+		ws_message_enqueue(msg);
+	}
+	tool_batch_output_settled_locked();
+	pthread_mutex_unlock(&tool_batch.mtx);
 }
 
 static void wait_for_tts_drain(void)
@@ -1094,6 +1152,7 @@ static void handle_response_done_cb(const char *response_json, void *arg)
 	(void)arg;
 
 	DEBUG_INFO("openai_rt: response.done received\n");
+	tool_batch_note_response_done();
 
 	/* Gemini native audio often skips tool calls; transfer after speech */
 	if (g_oairt.backend_type == AI_BACKEND_GEMINI_LIVE &&

@@ -151,6 +151,10 @@ bool tool_batch_begin(size_t n);
 void tool_batch_reset(void);
 /* Record that the model started a response in the current generation. */
 void tool_batch_note_response_created(void);
+/* RE thread, at CALL_CLOSED: cancel the model's response in progress and
+ * drop uncommitted input audio, so the ended call's conversation cannot
+ * carry tool calls into the next call on the same connection. */
+void websocket_isolate_call_end(void);
 unsigned tool_batch_current_gen(void);
 /* Generation of the tool execution running on the calling thread. */
 unsigned tool_exec_generation(void);

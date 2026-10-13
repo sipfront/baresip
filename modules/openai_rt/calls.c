@@ -469,9 +469,11 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 		/* Mark call as inactive; keep Gemini session if WS stays up */
 		g_oairt.call_active = false;
 
-		/* The WS may stay up for the next call: invalidate the tool
-		 * batch so a deferred worker still waiting on this call can
-		 * neither run against nor settle the next one. */
+		/* The WS may stay up for the next call: cancel what the model
+		 * is still doing for this one, and invalidate the tool batch
+		 * so a deferred worker still waiting on this call can neither
+		 * run against nor settle the next one. */
+		websocket_isolate_call_end();
 		tool_batch_reset();
 		if (g_oairt.ws_state != WS_CONNECTED) {
 			g_oairt.session_ready = false;
