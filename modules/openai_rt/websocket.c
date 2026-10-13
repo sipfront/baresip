@@ -17,6 +17,7 @@ static int ws_callback(struct lws *wsi, enum lws_callback_reasons reason,
 					   void *user, void *in, size_t len);
 static int add_auth_headers(void *in, size_t len);
 static void process_outgoing_messages(void);
+static int ws_write_message(struct ws_message *msg, bool *stale);
 static void send_function_call_output(const char *call_id,
 	const char *name, const char *output);
 static bool parse_transfer_destination(
@@ -121,6 +122,7 @@ static void ws_log_received(const char *in, size_t len)
 		 struct ws_message *msg = NULL;
 		 struct le *le;
 		 bool is_audio;
+		 bool stale;
 		 int written;
 
 		 if (!g_oairt.ws_client)
@@ -148,9 +150,14 @@ static void ws_log_received(const char *in, size_t len)
 			  strstr((const char *)(msg->data + LWS_PRE),
 				"\"audioBytes\"") != NULL));
 
-		 written = lws_write(g_oairt.ws_client, msg->data + LWS_PRE,
-							 msg->len,
-							 LWS_WRITE_TEXT);
+		 written = ws_write_message(msg, &stale);
+		 if (stale) {
+			 DEBUG_INFO("process_outgoing_messages: stale tool"
+				    " continuation of an ended call"
+				    " discarded\n");
+			 mem_deref(msg);
+			 continue;
+		 }
 		 if (written < 0) {
 			 warning("openai_rt: Failed to write WebSocket"
 				 " message\n");
@@ -261,6 +268,37 @@ bool tool_batch_begin(size_t n)
 	pthread_mutex_unlock(&tool_batch.mtx);
 
 	return accept;
+}
+
+/* Write one message to the socket. A generation-bound message (the
+ * continuation after a tool batch) is written under tool_batch.mtx after
+ * re-checking its generation, so tool_batch_reset() either purges it
+ * from the queue before it is dequeued, or waits for this write to
+ * finish; a reset can never slip in between the dequeue and the write.
+ * Returns the lws_write() result; *stale is set when the message was
+ * discarded instead of written. */
+static int ws_write_message(struct ws_message *msg, bool *stale)
+{
+	int written;
+
+	*stale = false;
+
+	if (!msg->gen_bound) {
+		return lws_write(g_oairt.ws_client, msg->data + LWS_PRE,
+				 msg->len, LWS_WRITE_TEXT);
+	}
+
+	pthread_mutex_lock(&tool_batch.mtx);
+	if (msg->gen != tool_batch.gen) {
+		pthread_mutex_unlock(&tool_batch.mtx);
+		*stale = true;
+		return 0;
+	}
+	written = lws_write(g_oairt.ws_client, msg->data + LWS_PRE,
+			    msg->len, LWS_WRITE_TEXT);
+	pthread_mutex_unlock(&tool_batch.mtx);
+
+	return written;
 }
 
 /* Called with tool_batch.mtx held. Drop every queued message that was
@@ -800,10 +838,20 @@ static void execute_tool_call(const char *call_id,
 	/* Process enabled tool calls */
 	if (strcmp(name, AI_TOOL_HANGUP_CALL.name) == 0) {
 		DEBUG_INFO("openai_rt: Executing hangup_call function\n");
-		/* The call is over: no continuation after this batch */
-		tool_batch_mark_hangup();
-		calls_hangup(tool_exec_call);
-		send_function_call_output(call_id, name, "Call hung up");
+		if (calls_hangup(tool_exec_call) == 0) {
+			/* The call is over: no continuation after this
+			 * batch. Marked only once the hangup is actually
+			 * queued; a failed one answers like any other
+			 * failed tool and keeps the conversation going. */
+			tool_batch_mark_hangup();
+			send_function_call_output(call_id, name,
+						  "Call hung up");
+		}
+		else {
+			send_function_call_output(call_id, name,
+						  "Error: Failed to hang up"
+						  " the call");
+		}
 	}
 	else if (strcmp(name, AI_TOOL_SEND_DTMF.name) == 0) {
 		DEBUG_INFO("openai_rt: Executing send_dtmf function\n");

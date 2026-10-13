@@ -553,23 +553,23 @@ void calls_close(void)
  * This function can be called from any thread. The actual hangup
  * will be executed in the RE main event loop thread via mqueue.
  */
-void calls_hangup(struct call *call)
+int calls_hangup(struct call *call)
 {
 	int err;
 
 	if (calls_state.shutting_down) {
 		DEBUG_INFO("calls_hangup: Ignoring hangup during shutdown\n");
-		return;
+		return EINTR;
 	}
 
 	if (!calls_state.mq) {
 		warning("openai_rt: calls_hangup: mqueue not initialized\n");
-		return;
+		return EINVAL;
 	}
 
 	if (!call) {
 		warning("openai_rt: calls_hangup: no call bound\n");
-		return;
+		return ENOENT;
 	}
 
 	DEBUG_INFO("calls_hangup: Queuing hangup request\n");
@@ -577,6 +577,8 @@ void calls_hangup(struct call *call)
 	if (err) {
 		warning("openai_rt: Failed to queue hangup: %m\n", err);
 	}
+
+	return err;
 }
 
 

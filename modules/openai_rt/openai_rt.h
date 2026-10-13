@@ -323,7 +323,7 @@ void audio_free_frame(struct audio_frame *frame);
 /* Call management functions accessible via tools */
 /* Call actions are bound to the call the tool was dispatched for and
  * dropped on the RE thread if that call is no longer the current one. */
-void calls_hangup(struct call *call);
+int calls_hangup(struct call *call);
 void calls_send_digit(struct call *call, char key);
 int calls_send_dtmf(struct call *call, const char *digits);
 int calls_transfer(struct call *call, const char *destination);

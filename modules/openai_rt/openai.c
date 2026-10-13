@@ -729,9 +729,12 @@ static struct json_object *get_json_object_field(struct json_object *obj,
 }
 
 /* A function_call item of response.output that the model is waiting on.
- * An item whose status is not "completed" (response cancelled by
- * barge-in, or arguments cut short) is skipped: the model does not wait
- * for its output. */
+ * An item whose status is present and not "completed" (response
+ * cancelled by barge-in, or arguments cut short) is skipped: the model
+ * does not wait for its output. A missing status is deliberately taken
+ * as completed: the GA API sets it on every output item today, and
+ * requiring it would silently disable every tool the day it is omitted,
+ * whereas a cancelled item always carries its status. */
 static bool openai_item_is_runnable_call(struct json_object *item,
 					 bool log_skipped)
 {
