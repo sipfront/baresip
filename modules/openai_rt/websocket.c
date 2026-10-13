@@ -23,6 +23,7 @@ static bool parse_transfer_destination(
 	struct json_object *args_obj, char *destination,
 	size_t destination_len);
 static void send_response_create(void);
+static void send_tool_response_create(void);
 static void process_conversation_kick_pending(void);
 
 /* Callbacks for AI model message parsing */
@@ -400,41 +401,65 @@ static int start_transfer_after_tts(const char *destination)
 }
 
 
-static void send_response_create(void)
+static int queue_response_create(void)
 {
 	struct ai_model *model = get_ai_model();
 	char *json_msg = NULL;
 	int err;
 
-	if (g_audio.response_created)
-		return;
-
 	if (!model || !model->build_response_create) {
 		warning("openai_rt: AI model not initialized for"
 			" response.create\n");
-		return;
+		return EINVAL;
 	}
 
 	err = model->build_response_create(NULL, &json_msg);
 	if (err) {
 		warning("openai_rt: Failed to build response.create: %m\n",
 			err);
-		return;
+		return err;
 	}
 
 	if (!json_msg)
-		return;
+		return EINVAL;
 
 	err = queue_message_to_openai(json_msg, str_len(json_msg), NULL, NULL);
 	if (err) {
 		warning("openai_rt: Failed to queue response.create: %m\n",
 			err);
 	}
-	else {
+	mem_deref(json_msg);
+	return err;
+}
+
+/* Kick off the conversation (wait_for_greeting=no). Sent once per call:
+ * response_created guards against a second kick from the audio commit
+ * path. */
+static void send_response_create(void)
+{
+	if (g_audio.response_created)
+		return;
+
+	if (!queue_response_create()) {
 		info("openai_rt: Conversation start message queued\n");
 		g_audio.response_created = true;
 	}
-	mem_deref(json_msg);
+}
+
+/* Continue the conversation after a function_call_output. The OpenAI
+ * Realtime model pauses after a function call until the client adds the
+ * output AND sends response.create; gpt-realtime-2.x never resumes on its
+ * own. This must not be gated by response_created (that flag only means
+ * the initial kick went out, which it always has by the time a tool is
+ * called), so it bypasses send_response_create(). Gemini continues by
+ * itself after a toolResponse, so this is a no-op there. */
+static void send_tool_response_create(void)
+{
+	if (g_oairt.backend_type != AI_BACKEND_OPENAI_REALTIME)
+		return;
+
+	if (!queue_response_create())
+		DEBUG_INFO("response.create queued after tool output\n");
 }
 
 /* Callbacks for AI model message parsing */
@@ -550,8 +575,7 @@ static void execute_tool_call(const char *call_id,
 			send_function_call_output(call_id, name,
 			                          "Error: Failed to schedule"
 						  " tool execution");
-			if (g_oairt.backend_type == AI_BACKEND_OPENAI_REALTIME)
-				send_response_create();
+			send_tool_response_create();
 		}
 		return;
 	}
@@ -578,9 +602,13 @@ static void execute_tool_call(const char *call_id,
 		}
 
 		struct json_object *digits_obj = NULL;
+		/* The schema says string, but a model may still hand a
+		 * single digit over as a JSON number; json-c renders an
+		 * int via json_object_get_string, so accept both. */
 		if (json_object_object_get_ex(args_obj, "digits",
 						     &digits_obj) &&
-		    json_object_is_type(digits_obj, json_type_string)) {
+		    (json_object_is_type(digits_obj, json_type_string) ||
+		     json_object_is_type(digits_obj, json_type_int))) {
 			const char *digits =
 				json_object_get_string(digits_obj);
 			if (digits && *digits) {
@@ -620,9 +648,8 @@ static void execute_tool_call(const char *call_id,
 		}
 		json_object_put(args_obj);
 
-		/* Trigger response for OpenAI to acknowledge DTMF */
-		if (g_oairt.backend_type == AI_BACKEND_OPENAI_REALTIME)
-			send_response_create();
+		/* Let the model acknowledge the DTMF and carry on */
+		send_tool_response_create();
 	}
 	else if (strcmp(name, AI_TOOL_API_CALL.name) == 0) {
 		DEBUG_INFO("openai_rt: Executing api_call function\n");
@@ -690,9 +717,8 @@ static void execute_tool_call(const char *call_id,
 		}
 		json_object_put(args_obj);
 
-		/* Trigger response for OpenAI to process API result */
-		if (g_oairt.backend_type == AI_BACKEND_OPENAI_REALTIME)
-			send_response_create();
+		/* Let the model process the API result */
+		send_tool_response_create();
 	}
 	else if (strcmp(name, AI_TOOL_TRANSFER_CALL.name) == 0) {
 		struct json_object *args_obj = json_tokener_parse(arguments);
@@ -736,8 +762,7 @@ static void execute_tool_call(const char *call_id,
 				        destination, err);
 			}
 
-			if (g_oairt.backend_type == AI_BACKEND_OPENAI_REALTIME)
-				send_response_create();
+			send_tool_response_create();
 		}
 		else {
 			send_function_call_output(call_id, name,
@@ -782,9 +807,7 @@ static void execute_tool_call(const char *call_id,
 		if (args_obj)
 			json_object_put(args_obj);
 
-		if (g_oairt.backend_type == AI_BACKEND_OPENAI_REALTIME) {
-			send_response_create();
-		}
+		send_tool_response_create();
 	}
 	else {
 		/* This shouldn't happen if validation above worked, but handle

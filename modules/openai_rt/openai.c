@@ -728,6 +728,61 @@ static struct json_object *get_json_object_field(struct json_object *obj,
 	return field_obj;
 }
 
+/* Walk response.output of a response.done event and hand every completed
+ * function_call item to the tool dispatcher. gpt-realtime-2.x may emit
+ * several calls in one response; each gets its own output. An item whose
+ * status is not "completed" (response cancelled by barge-in, or arguments
+ * cut short) is skipped: the model does not wait for its output. */
+static void openai_dispatch_function_calls(struct json_object *response_obj,
+		void (*function_call_cb)(const char *call_id,
+		const char *name,
+		const char *arguments,
+		void *arg),
+		void *cb_arg)
+{
+	struct json_object *output = NULL;
+	size_t i, n;
+
+	if (!json_object_object_get_ex(response_obj, "output", &output) ||
+	    !json_object_is_type(output, json_type_array))
+		return;
+
+	n = json_object_array_length(output);
+	for (i = 0; i < n; i++) {
+		struct json_object *item = json_object_array_get_idx(output,
+								      i);
+		struct json_object *f = NULL;
+		const char *name, *call_id, *arguments;
+
+		if (!item || !json_object_object_get_ex(item, "type", &f) ||
+		    !json_object_is_type(f, json_type_string) ||
+		    strcmp(json_object_get_string(f), "function_call") != 0)
+			continue;
+
+		if (json_object_object_get_ex(item, "status", &f) &&
+		    json_object_is_type(f, json_type_string) &&
+		    strcmp(json_object_get_string(f), "completed") != 0) {
+			warning("openai_rt: skipping function_call with"
+				" status '%s'\n", json_object_get_string(f));
+			continue;
+		}
+
+		name = get_json_string_field(item, "name", "function_call");
+		call_id = get_json_string_field(item, "call_id",
+						"function_call");
+		arguments = get_json_string_field(item, "arguments",
+						  "function_call");
+		if (!name || !call_id)
+			continue;
+
+		info("openai_rt: function call %s(%s) call_id=%s\n",
+		     name, arguments ? arguments : "", call_id);
+		function_call_cb(call_id, name, arguments ? arguments : "{}",
+				 cb_arg);
+	}
+}
+
+
 /* Server events we receive on every turn but have no use for: lifecycle
  * markers whose payload is fully covered by the terminal events we do handle
  * (transcript .done / .completed, output_item.done, response.done). Kept out
@@ -747,6 +802,7 @@ static bool openai_event_is_ignored(const char *type)
 		"conversation.item.input_audio_transcription.segment",
 		"response.created",
 		"response.output_item.added",
+		"response.output_item.done",
 		"response.content_part.added",
 		"response.content_part.done",
 		"response.output_audio_transcript.delta",
@@ -815,41 +871,6 @@ static int openai_parse_message(const char *json_str,
 			speech_started_cb(cb_arg);
 		}
 	}
-	else if (strcmp(type, "response.output_item.done") == 0) {
-		struct json_object *item_obj = get_json_object_field(root,
-			"item",
-			"output_item.done");
-		if (item_obj) {
-			const char *item_type = get_json_string_field(item_obj,
-				"type",
-				"output_item.done");
-			if (item_type && strcmp(item_type,
-				"function_call") == 0) {
-				const char *name = get_json_string_field(
-					item_obj,
-					"name",
-					"function_call");
-				const char *call_id = get_json_string_field(
-					item_obj,
-					"call_id",
-					"function_call");
-				const char *arguments = get_json_string_field(
-					item_obj,
-					"arguments",
-					"function_call");
-
-				if (name
-					&& call_id
-					&& arguments
-					&& function_call_cb) {
-					function_call_cb(call_id,
-						name,
-						arguments,
-						cb_arg);
-				}
-			}
-		}
-	}
 	else if (strcmp(type, "response.done") == 0) {
 		struct json_object *response_obj = get_json_object_field(root,
 			"response",
@@ -885,6 +906,19 @@ static int openai_parse_message(const char *json_str,
 			if (response_json) {
 				response_done_cb(response_json, cb_arg);
 			}
+		}
+
+		/* Function calls are executed from here, not from
+		 * response.output_item.done, so that their
+		 * function_call_output and the response.create that must
+		 * follow it are never sent while the calling response is
+		 * still active (OpenAI rejects that response.create with
+		 * conversation_already_has_active_response, and the model
+		 * then sits waiting for a continuation that never comes). */
+		if (response_obj && function_call_cb) {
+			openai_dispatch_function_calls(response_obj,
+						       function_call_cb,
+						       cb_arg);
 		}
 	}
 	else if (strcmp(type,
