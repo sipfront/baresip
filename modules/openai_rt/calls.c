@@ -16,8 +16,15 @@ enum call_mq_events {
 	MQ_SEND_DIGIT,
 	MQ_API_CALL,
 	MQ_TRANSFER,
+	MQ_RECORD_EVENT,
 	MQ_VOICEAI_CONTENT,
 };
+
+/* Every queued call action is also kept on this list until the handler
+ * takes it, so that calls_close() can release what is still queued (or
+ * being pushed) when the mqueue is destroyed underneath it. */
+static struct list actions_queued;
+static pthread_mutex_t actions_mtx = PTHREAD_MUTEX_INITIALIZER;
 
 /* WS stays up across calls; Realtime/Live often delivers final transcripts
  * shortly after hangup. Defer writing conversation-trace.json so trailing
@@ -91,10 +98,12 @@ static void trace_write_tmr_handler(void *arg)
  * worker that outlived its call (the WS stays up across calls) can no
  * longer hang up, key into or transfer the next one. */
 struct mq_action {
+	struct le le;
 	struct call *call;
 	unsigned gen;
 	char key;
-	char *destination;
+	char *destination;   /* transfer destination / record_event label */
+	char *payload;       /* record_event arguments */
 };
 
 static void mq_action_destructor(void *arg)
@@ -102,10 +111,18 @@ static void mq_action_destructor(void *arg)
 	struct mq_action *a = arg;
 
 	mem_deref(a->destination);
+	mem_deref(a->payload);
+}
+
+static bool mq_is_action(int id)
+{
+	return id == MQ_HANGUP || id == MQ_SEND_DIGIT ||
+	       id == MQ_TRANSFER || id == MQ_RECORD_EVENT;
 }
 
 static int push_action(enum call_mq_events id, struct call *call,
-		       char key, const char *destination)
+		       char key, const char *destination,
+		       const char *payload)
 {
 	struct mq_action *a;
 	int err = 0;
@@ -119,12 +136,31 @@ static int push_action(enum call_mq_events id, struct call *call,
 	a->key = key;
 	if (destination)
 		err = str_dup(&a->destination, destination);
-	if (!err)
-		err = mqueue_push(calls_state.mq, id, a);
+	if (!err && payload)
+		err = str_dup(&a->payload, payload);
+	if (err) {
+		mem_deref(a);
+		return err;
+	}
+
+	pthread_mutex_lock(&actions_mtx);
+	list_append(&actions_queued, &a->le, a);
+	err = calls_state.mq ? mqueue_push(calls_state.mq, id, a) : EINVAL;
+	if (err)
+		list_unlink(&a->le);
+	pthread_mutex_unlock(&actions_mtx);
 	if (err)
 		mem_deref(a);
 
 	return err;
+}
+
+/* RE thread, or calls_close(): take an action off the queued list. */
+static void mq_action_taken(struct mq_action *a)
+{
+	pthread_mutex_lock(&actions_mtx);
+	list_unlink(&a->le);
+	pthread_mutex_unlock(&actions_mtx);
 }
 
 /* RE thread: is this action still aimed at the current call? */
@@ -155,10 +191,16 @@ static void mqueue_handler(int id, void *data, void *arg)
 {
 	(void)arg;
 
-	/* Ignore events during shutdown to prevent crashes */
+	if (mq_is_action(id) && data)
+		mq_action_taken(data);
+
+	/* Ignore events during shutdown to prevent crashes; the payloads
+	 * are ours to free either way. */
 	if (calls_state.shutting_down) {
 		DEBUG_INFO("mqueue_handler: "
 			"Ignoring event %d during shutdown\n", id);
+		if (mq_is_action(id) || id == MQ_VOICEAI_CONTENT)
+			mem_deref(data);
 		return;
 	}
 
@@ -258,6 +300,23 @@ static void mqueue_handler(int id, void *data, void *arg)
 				}
 			}
 
+			mem_deref(a);
+		}
+		break;
+
+	case MQ_RECORD_EVENT:
+		{
+			struct mq_action *a = data;
+
+			/* On the RE thread, like trace_reset() at the next
+			 * CALL_ESTABLISHED: an event of an ended call can
+			 * never land in the next call's trace. */
+			if (a && a->destination &&
+			    mq_action_is_current(a, "record_event")) {
+				trace_add_toolcall(a->destination,
+						   a->payload ? a->payload
+							      : "{}");
+			}
 			mem_deref(a);
 		}
 		break;
@@ -547,8 +606,16 @@ void calls_close(void)
 	/* Persist any pending trace before tearing down */
 	trace_finalize_write();
 
-	/* Clean up message queue */
+	/* Clean up message queue, then release every action that was
+	 * still queued in it (the mqueue drops pending events silently). */
 	calls_state.mq = mem_deref(calls_state.mq);
+	pthread_mutex_lock(&actions_mtx);
+	while (!list_isempty(&actions_queued)) {
+		struct mq_action *a = list_ledata(list_head(&actions_queued));
+		list_unlink(&a->le);
+		mem_deref(a);
+	}
+	pthread_mutex_unlock(&actions_mtx);
 
 	/* Clear call state */
 	g_oairt.call_active = false;
@@ -584,7 +651,7 @@ int calls_hangup(struct call *call)
 	}
 
 	DEBUG_INFO("calls_hangup: Queuing hangup request\n");
-	err = push_action(MQ_HANGUP, call, 0, NULL);
+	err = push_action(MQ_HANGUP, call, 0, NULL, NULL);
 	if (err) {
 		warning("openai_rt: Failed to queue hangup: %m\n", err);
 	}
@@ -629,7 +696,7 @@ void calls_send_digit(struct call *call, char key)
 	else {
 		DEBUG_INFO("calls_send_digit: Queuing digit '%c'\n", key);
 	}
-	err = push_action(MQ_SEND_DIGIT, call, key, NULL);
+	err = push_action(MQ_SEND_DIGIT, call, key, NULL, NULL);
 	if (err) {
 		warning("openai_rt: Failed to queue digit send: %m\n", err);
 	}
@@ -743,13 +810,46 @@ int calls_transfer(struct call *call, const char *destination)
 	}
 
 	DEBUG_INFO("calls_transfer: Queuing transfer to '%s'\n", destination);
-	err = push_action(MQ_TRANSFER, call, 0, destination);
+	err = push_action(MQ_TRANSFER, call, 0, destination, NULL);
 	if (err) {
 		warning("openai_rt: Failed to queue transfer: %m\n", err);
 		return err;
 	}
 
 	return 0;
+}
+
+
+/**
+ * Record a tool event into the conversation trace - thread-safe
+ * The write happens on the RE thread, bound to the call the tool was
+ * dispatched for, so it can neither race trace_reset() of the next call
+ * nor land in that call's trace.
+ */
+int calls_record_event(struct call *call, const char *label,
+		       const char *arguments)
+{
+	int err;
+
+	if (calls_state.shutting_down)
+		return EINTR;
+
+	if (!calls_state.mq)
+		return EINVAL;
+
+	if (!label || !*label)
+		return EINVAL;
+
+	if (!call) {
+		warning("openai_rt: calls_record_event: no call bound\n");
+		return ENOENT;
+	}
+
+	err = push_action(MQ_RECORD_EVENT, call, 0, label, arguments);
+	if (err)
+		warning("openai_rt: Failed to queue record_event: %m\n", err);
+
+	return err;
 }
 
 

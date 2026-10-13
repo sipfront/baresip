@@ -1260,7 +1260,8 @@ static void execute_tool_call(const char *call_id,
 		 * conversation trace for the downstream task evaluator.
 		 * No side effect on the call -- record under the
 		 * caller-supplied label (with the full arguments as
-		 * payload) and acknowledge. */
+		 * payload) and acknowledge. The write goes through the RE
+		 * thread, bound to this call, like every call action. */
 		struct json_object *args_obj = json_tokener_parse(arguments);
 		struct json_object *label_obj = NULL, *value_obj = NULL;
 		const char *label = NULL, *value = NULL;
@@ -1276,8 +1277,16 @@ static void execute_tool_call(const char *call_id,
 
 		if (label && *label && value && *value) {
 			DEBUG_INFO("openai_rt: Recording event '%s'\n", label);
-			trace_add_toolcall(label, arguments);
-			send_function_call_output(call_id, name, "Recorded");
+			if (calls_record_event(tool_exec_call, label,
+					       arguments) == 0) {
+				send_function_call_output(call_id, name,
+							  "Recorded");
+			}
+			else {
+				send_function_call_output(call_id, name,
+							  "Error: Failed to"
+							  " record the event");
+			}
 		}
 		else {
 			warning("openai_rt: record_event missing 'label' or"

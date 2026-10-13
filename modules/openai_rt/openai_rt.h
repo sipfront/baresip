@@ -341,6 +341,8 @@ int calls_hangup(struct call *call);
 void calls_send_digit(struct call *call, char key);
 int calls_send_dtmf(struct call *call, const char *digits);
 int calls_transfer(struct call *call, const char *destination);
+int calls_record_event(struct call *call, const char *label,
+		       const char *arguments);
 int calls_api_call(const char *method, const char *uri,
 		   const char *content_type, const char *auth_type,
 		   const char *auth_username, const char *auth_password,
