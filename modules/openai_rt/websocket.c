@@ -192,22 +192,87 @@ static inline void ws_wake_service(void)
 	}
 }
 
+/* Tool-call batch accounting for the OpenAI backend.
+ *
+ * The model pauses after a response that contains function calls until
+ * the client has added a function_call_output for every call and then
+ * sent exactly one response.create. One continuation per output would
+ * start the next response while outputs are still missing, and the
+ * extra response.create is rejected as an active response. So the
+ * dispatcher announces how many outputs a response owes
+ * (tool_batch_begin), every send_function_call_output, successful or
+ * not, settles one of them (the model gets at most that one message per
+ * call either way), and the last one sends the continuation. Deferred
+ * tool threads settle theirs when they eventually run. A hangup_call in
+ * the batch suppresses the continuation: the call is over. */
+static struct {
+	pthread_mutex_t mtx;
+	size_t pending;
+	bool hangup;
+} tool_batch = { PTHREAD_MUTEX_INITIALIZER, 0, false };
+
+void tool_batch_begin(size_t n)
+{
+	if (g_oairt.backend_type != AI_BACKEND_OPENAI_REALTIME || !n)
+		return;
+
+	pthread_mutex_lock(&tool_batch.mtx);
+	tool_batch.pending += n;
+	pthread_mutex_unlock(&tool_batch.mtx);
+}
+
+static void tool_batch_reset(void)
+{
+	pthread_mutex_lock(&tool_batch.mtx);
+	tool_batch.pending = 0;
+	tool_batch.hangup = false;
+	pthread_mutex_unlock(&tool_batch.mtx);
+}
+
+static void tool_batch_output_settled(const char *name)
+{
+	bool cont = false;
+
+	if (g_oairt.backend_type != AI_BACKEND_OPENAI_REALTIME)
+		return;
+
+	pthread_mutex_lock(&tool_batch.mtx);
+	if (name && strcmp(name, AI_TOOL_HANGUP_CALL.name) == 0)
+		tool_batch.hangup = true;
+	if (tool_batch.pending)
+		tool_batch.pending--;
+	if (tool_batch.pending == 0) {
+		cont = !tool_batch.hangup;
+		tool_batch.hangup = false;
+	}
+	pthread_mutex_unlock(&tool_batch.mtx);
+
+	if (cont)
+		send_tool_response_create();
+}
+
+/* Queue the output of one tool call. Always settles the call in the
+ * batch, whether or not the message made it to the queue, so a failure
+ * here never leaves the continuation hanging on an output that will
+ * never come. */
 static void send_function_call_output(const char *call_id,
 	const char *name, const char *output)
 {
 	struct ai_model *model = get_ai_model();
+	char *json_msg = NULL;
+	int err;
+
 	if (!model || !model->build_function_call_output) {
 		warning("openai_rt: AI model not initialized\n");
-		return;
+		goto settle;
 	}
 
-	char *json_msg = NULL;
-	int err = model->build_function_call_output(call_id, name, output,
+	err = model->build_function_call_output(call_id, name, output,
 		&json_msg);
 	if (err) {
 		warning("openai_rt: Failed to build"
 			" function_call_output: %m\n", err);
-		return;
+		goto settle;
 	}
 
 	if (json_msg) {
@@ -219,6 +284,9 @@ static void send_function_call_output(const char *call_id,
 		}
 		mem_deref(json_msg);
 	}
+
+settle:
+	tool_batch_output_settled(name);
 }
 
 static void wait_for_tts_drain(void)
@@ -446,13 +514,14 @@ static void send_response_create(void)
 	}
 }
 
-/* Continue the conversation after a function_call_output. The OpenAI
+/* Continue the conversation once every function_call_output of a
+ * response is queued (driven by tool_batch_output_settled). The OpenAI
  * Realtime model pauses after a function call until the client adds the
- * output AND sends response.create; gpt-realtime-2.x never resumes on its
- * own. This must not be gated by response_created (that flag only means
- * the initial kick went out, which it always has by the time a tool is
- * called), so it bypasses send_response_create(). Gemini continues by
- * itself after a toolResponse, so this is a no-op there. */
+ * outputs AND sends response.create; gpt-realtime-2.x never resumes on
+ * its own. This must not be gated by response_created (that flag only
+ * means the initial kick went out, which it always has by the time a
+ * tool is called), so it bypasses send_response_create(). Gemini
+ * continues by itself after a toolResponse, so this is a no-op there. */
 static void send_tool_response_create(void)
 {
 	if (g_oairt.backend_type != AI_BACKEND_OPENAI_REALTIME)
@@ -575,7 +644,6 @@ static void execute_tool_call(const char *call_id,
 			send_function_call_output(call_id, name,
 			                          "Error: Failed to schedule"
 						  " tool execution");
-			send_tool_response_create();
 		}
 		return;
 	}
@@ -585,7 +653,7 @@ static void execute_tool_call(const char *call_id,
 		DEBUG_INFO("openai_rt: Executing hangup_call function\n");
 		calls_hangup();
 		send_function_call_output(call_id, name, "Call hung up");
-		/* No response.create needed after hangup */
+		/* hangup_call suppresses the batch continuation */
 	}
 	else if (strcmp(name, AI_TOOL_SEND_DTMF.name) == 0) {
 		DEBUG_INFO("openai_rt: Executing send_dtmf function\n");
@@ -647,9 +715,6 @@ static void execute_tool_call(const char *call_id,
 						  " 'digits' parameter");
 		}
 		json_object_put(args_obj);
-
-		/* Let the model acknowledge the DTMF and carry on */
-		send_tool_response_create();
 	}
 	else if (strcmp(name, AI_TOOL_API_CALL.name) == 0) {
 		DEBUG_INFO("openai_rt: Executing api_call function\n");
@@ -716,9 +781,6 @@ static void execute_tool_call(const char *call_id,
 						  " 'uri' parameter");
 		}
 		json_object_put(args_obj);
-
-		/* Let the model process the API result */
-		send_tool_response_create();
 	}
 	else if (strcmp(name, AI_TOOL_TRANSFER_CALL.name) == 0) {
 		struct json_object *args_obj = json_tokener_parse(arguments);
@@ -761,8 +823,6 @@ static void execute_tool_call(const char *call_id,
 					" '%s': %m\n",
 				        destination, err);
 			}
-
-			send_tool_response_create();
 		}
 		else {
 			send_function_call_output(call_id, name,
@@ -806,8 +866,6 @@ static void execute_tool_call(const char *call_id,
 
 		if (args_obj)
 			json_object_put(args_obj);
-
-		send_tool_response_create();
 	}
 	else {
 		/* This shouldn't happen if validation above worked, but handle
@@ -884,6 +942,7 @@ static void handle_response_done_cb(const char *response_json, void *arg)
 			 g_oairt.session_ready = false;
 			 g_oairt.session_cfg_applied = false;
 			 g_oairt.conversation_kick_pending = false;
+			 tool_batch_reset();
 
 			 send_session_update();
 
@@ -948,6 +1007,7 @@ static void handle_response_done_cb(const char *response_json, void *arg)
 		 g_oairt.setup_sent = false;
 		 g_oairt.conversation_kick_pending = false;
 		 websocket_clear_message_queue();
+		 tool_batch_reset();
 		 break;
 
 	case LWS_CALLBACK_CLIENT_CLOSED:
@@ -963,6 +1023,7 @@ static void handle_response_done_cb(const char *response_json, void *arg)
 		g_oairt.setup_sent = false;
 		g_oairt.conversation_kick_pending = false;
 		websocket_clear_message_queue();
+	tool_batch_reset();
 		break;
 
 	 case LWS_CALLBACK_CLIENT_APPEND_HANDSHAKE_HEADER: {
@@ -1149,6 +1210,7 @@ static void handle_response_done_cb(const char *response_json, void *arg)
 	 g_oairt.setup_sent = false;
 	 g_oairt.conversation_kick_pending = false;
 	 websocket_clear_message_queue();
+	 tool_batch_reset();
 
 	 info("openai_rt: WebSocket disconnected from AI model\n");
  }
@@ -1610,6 +1672,7 @@ static void process_conversation_kick_pending(void)
 
 		 /* Clear message queues properly */
 	websocket_clear_message_queue();
+	tool_batch_reset();
 
 	 /* Clean up mutex and condition variable */
 	 pthread_mutex_destroy(&g_oairt.ws_mutex);

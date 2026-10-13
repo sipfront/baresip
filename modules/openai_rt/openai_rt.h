@@ -136,6 +136,9 @@ bool websocket_is_ready(void);
 int websocket_wait_ready(int timeout_ms);
 const char *websocket_status_string(void);
 void send_session_update(void);
+/* Announce n tool-call outputs owed for the response being dispatched
+ * (OpenAI backend); the last queued output sends the continuation. */
+void tool_batch_begin(size_t n);
 void websocket_kick_session_setup(void);
 int queue_message_to_openai(const char *json_msg, size_t len,
 			    void (*callback)(void *arg, int err),

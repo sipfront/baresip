@@ -728,11 +728,38 @@ static struct json_object *get_json_object_field(struct json_object *obj,
 	return field_obj;
 }
 
+/* A function_call item of response.output that the model is waiting on.
+ * An item whose status is not "completed" (response cancelled by
+ * barge-in, or arguments cut short) is skipped: the model does not wait
+ * for its output. */
+static bool openai_item_is_runnable_call(struct json_object *item,
+					 bool log_skipped)
+{
+	struct json_object *f = NULL;
+
+	if (!item || !json_object_object_get_ex(item, "type", &f) ||
+	    !json_object_is_type(f, json_type_string) ||
+	    strcmp(json_object_get_string(f), "function_call") != 0)
+		return false;
+
+	if (json_object_object_get_ex(item, "status", &f) &&
+	    json_object_is_type(f, json_type_string) &&
+	    strcmp(json_object_get_string(f), "completed") != 0) {
+		if (log_skipped)
+			warning("openai_rt: skipping function_call with"
+				" status '%s'\n", json_object_get_string(f));
+		return false;
+	}
+
+	return true;
+}
+
 /* Walk response.output of a response.done event and hand every completed
  * function_call item to the tool dispatcher. gpt-realtime-2.x may emit
- * several calls in one response; each gets its own output. An item whose
- * status is not "completed" (response cancelled by barge-in, or arguments
- * cut short) is skipped: the model does not wait for its output. */
+ * several calls in one response; the batch size is announced first so
+ * that the continuation goes out once, after the last output. Arguments
+ * are logged for send_dtmf only: api_call carries credentials and
+ * record_event whatever the far end said. */
 static void openai_dispatch_function_calls(struct json_object *response_obj,
 		void (*function_call_cb)(const char *call_id,
 		const char *name,
@@ -741,7 +768,7 @@ static void openai_dispatch_function_calls(struct json_object *response_obj,
 		void *cb_arg)
 {
 	struct json_object *output = NULL;
-	size_t i, n;
+	size_t i, n, runnable = 0;
 
 	if (!json_object_object_get_ex(response_obj, "output", &output) ||
 	    !json_object_is_type(output, json_type_array))
@@ -749,36 +776,50 @@ static void openai_dispatch_function_calls(struct json_object *response_obj,
 
 	n = json_object_array_length(output);
 	for (i = 0; i < n; i++) {
+		if (openai_item_is_runnable_call(
+			    json_object_array_get_idx(output, i), true))
+			runnable++;
+	}
+	if (!runnable)
+		return;
+
+	tool_batch_begin(runnable);
+
+	for (i = 0; i < n; i++) {
 		struct json_object *item = json_object_array_get_idx(output,
 								      i);
-		struct json_object *f = NULL;
 		const char *name, *call_id, *arguments;
 
-		if (!item || !json_object_object_get_ex(item, "type", &f) ||
-		    !json_object_is_type(f, json_type_string) ||
-		    strcmp(json_object_get_string(f), "function_call") != 0)
+		if (!openai_item_is_runnable_call(item, false))
 			continue;
-
-		if (json_object_object_get_ex(item, "status", &f) &&
-		    json_object_is_type(f, json_type_string) &&
-		    strcmp(json_object_get_string(f), "completed") != 0) {
-			warning("openai_rt: skipping function_call with"
-				" status '%s'\n", json_object_get_string(f));
-			continue;
-		}
 
 		name = get_json_string_field(item, "name", "function_call");
 		call_id = get_json_string_field(item, "call_id",
 						"function_call");
 		arguments = get_json_string_field(item, "arguments",
 						  "function_call");
-		if (!name || !call_id)
-			continue;
+		if (!arguments)
+			arguments = "{}";
 
-		info("openai_rt: function call %s(%s) call_id=%s\n",
-		     name, arguments ? arguments : "", call_id);
-		function_call_cb(call_id, name, arguments ? arguments : "{}",
-				 cb_arg);
+		if (!name || !call_id) {
+			/* Nothing we can answer; settle its slot so the
+			 * batch does not wait for it. */
+			warning("openai_rt: function_call item without name"
+				" or call_id, ignored\n");
+			function_call_cb(call_id ? call_id : "", "",
+					 arguments, cb_arg);
+			continue;
+		}
+
+		if (strcmp(name, AI_TOOL_SEND_DTMF.name) == 0)
+			info("openai_rt: function call %s(%s) call_id=%s\n",
+			     name, arguments, call_id);
+		else
+			info("openai_rt: function call %s call_id=%s"
+			     " (%zu bytes of arguments)\n",
+			     name, call_id, str_len(arguments));
+
+		function_call_cb(call_id, name, arguments, cb_arg);
 	}
 }
 
