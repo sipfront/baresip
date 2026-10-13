@@ -23,7 +23,9 @@ static bool parse_transfer_destination(
 	struct json_object *args_obj, char *destination,
 	size_t destination_len);
 static void send_response_create(void);
-static void send_tool_response_create(void);
+static struct ws_message *ws_message_alloc(const char *json_msg,
+	size_t len, void (*callback)(void *arg, int err), void *arg);
+static void ws_message_enqueue(struct ws_message *msg);
 static void process_conversation_kick_pending(void);
 
 /* Callbacks for AI model message parsing */
@@ -261,13 +263,83 @@ bool tool_batch_begin(size_t n)
 	return accept;
 }
 
+/* Called with tool_batch.mtx held. Drop every queued message that was
+ * bound to an older generation: a continuation response.create of a
+ * call that has ended must not start an unsolicited response in the
+ * next call. Lock order is tool_batch.mtx, then ws_mutex, everywhere. */
+static void tool_batch_purge_stale_locked(void)
+{
+	struct le *le;
+
+	pthread_mutex_lock(&g_oairt.ws_mutex);
+	le = list_head(&g_oairt.to_openai_queue);
+	while (le) {
+		struct le *next = le->next;
+		struct ws_message *msg = list_ledata(le);
+
+		if (msg->gen_bound && msg->gen != tool_batch.gen) {
+			list_unlink(le);
+			mem_deref(msg);
+			DEBUG_INFO("stale tool continuation of an ended call"
+				   " discarded\n");
+		}
+		le = next;
+	}
+	pthread_mutex_unlock(&g_oairt.ws_mutex);
+}
+
 void tool_batch_reset(void)
 {
 	pthread_mutex_lock(&tool_batch.mtx);
 	tool_batch.pending = 0;
 	tool_batch.hangup = false;
 	tool_batch.gen++;
+	tool_batch_purge_stale_locked();
 	pthread_mutex_unlock(&tool_batch.mtx);
+}
+
+/* Called with tool_batch.mtx held: deciding that the batch is complete,
+ * stamping the continuation with the generation and putting it on the
+ * queue are one critical section with tool_batch_reset(), so a call
+ * ending in between either sees the message on the queue and purges
+ * it, or bumps the generation before it is stamped (and the settlement
+ * that led here would not have passed its generation check). */
+static void queue_continuation_locked(void)
+{
+	struct ai_model *model = get_ai_model();
+	struct ws_message *msg;
+	char *json_msg = NULL;
+	int err;
+
+	if (g_oairt.ws_state == WS_DISCONNECTED ||
+	    g_oairt.ws_state == WS_DISCONNECTING)
+		return;
+
+	if (!model || !model->build_response_create) {
+		warning("openai_rt: AI model not initialized for"
+			" response.create\n");
+		return;
+	}
+
+	err = model->build_response_create(NULL, &json_msg);
+	if (err || !json_msg) {
+		warning("openai_rt: Failed to build response.create: %m\n",
+			err ? err : EINVAL);
+		return;
+	}
+
+	msg = ws_message_alloc(json_msg, str_len(json_msg), NULL, NULL);
+	mem_deref(json_msg);
+	if (!msg) {
+		warning("openai_rt: Failed to queue response.create: %m\n",
+			ENOMEM);
+		return;
+	}
+
+	msg->gen_bound = true;
+	msg->gen = tool_batch.gen;
+	ws_message_enqueue(msg);
+	DEBUG_INFO("response.create queued after tool output\n");
 }
 
 unsigned tool_batch_current_gen(void)
@@ -312,10 +384,9 @@ static void tool_batch_output_settled(void)
 		cont = !tool_batch.hangup;
 		tool_batch.hangup = false;
 	}
-	pthread_mutex_unlock(&tool_batch.mtx);
-
 	if (cont)
-		send_tool_response_create();
+		queue_continuation_locked();
+	pthread_mutex_unlock(&tool_batch.mtx);
 }
 
 /* Queue the output of one tool call. Always settles the call in the
@@ -599,23 +670,6 @@ static void send_response_create(void)
 		info("openai_rt: Conversation start message queued\n");
 		g_audio.response_created = true;
 	}
-}
-
-/* Continue the conversation once every function_call_output of a
- * response is queued (driven by tool_batch_output_settled). The OpenAI
- * Realtime model pauses after a function call until the client adds the
- * outputs AND sends response.create; gpt-realtime-2.x never resumes on
- * its own. This must not be gated by response_created (that flag only
- * means the initial kick went out, which it always has by the time a
- * tool is called), so it bypasses send_response_create(). Gemini
- * continues by itself after a toolResponse, so this is a no-op there. */
-static void send_tool_response_create(void)
-{
-	if (g_oairt.backend_type != AI_BACKEND_OPENAI_REALTIME)
-		return;
-
-	if (!queue_response_create())
-		DEBUG_INFO("response.create queued after tool output\n");
 }
 
 /* Callbacks for AI model message parsing */
@@ -1439,21 +1493,20 @@ static void process_conversation_kick_pending(void)
 	}
 }
 
- int queue_message_to_openai(const char *json_msg, size_t len,
-	void (*callback)(void *arg, int err), void *arg)
- {
-	if (g_oairt.ws_state == WS_DISCONNECTED ||
-		g_oairt.ws_state == WS_DISCONNECTING) {
-		return ENOTCONN;
-	}
-
+static struct ws_message *ws_message_alloc(const char *json_msg,
+	size_t len, void (*callback)(void *arg, int err), void *arg)
+{
 	struct ws_message *msg = mem_zalloc(sizeof(*msg),
 		ws_message_destructor);
-	if (!msg) return ENOMEM;
+	if (!msg)
+		return NULL;
 
 	msg->type = WS_MSG_TO_OPENAI;
 	msg->data = mem_alloc(LWS_PRE + len + 1, NULL);
-	if (!msg->data) { mem_deref(msg); return ENOMEM; }
+	if (!msg->data) {
+		mem_deref(msg);
+		return NULL;
+	}
 
 	memcpy(msg->data + LWS_PRE, json_msg, len);
 	msg->data[LWS_PRE + len] = '\0';
@@ -1461,8 +1514,13 @@ static void process_conversation_kick_pending(void)
 	msg->callback = callback;
 	msg->arg = arg;
 
+	return msg;
+}
+
+/* Append to the outgoing queue and wake the I/O thread. */
+static void ws_message_enqueue(struct ws_message *msg)
+{
 	pthread_mutex_lock(&g_oairt.ws_mutex);
-	/*DEBUG_INFO("Queueing message to OpenAI: %s\n", json_msg); */
 	list_append(&g_oairt.to_openai_queue, &msg->le, msg);
 	pthread_mutex_unlock(&g_oairt.ws_mutex);
 
@@ -1471,18 +1529,33 @@ static void process_conversation_kick_pending(void)
 
 	/* If already connected, also request a writable callback */
 	if (g_oairt.ws_state == WS_CONNECTED && g_oairt.ws_client) {
-		/* DEBUG_INFO("queue_message_to_openai: Requesting writable
-		 * callback\n"); */
 		lws_callback_on_writable(g_oairt.ws_client);
 	}
 	else {
-		DEBUG_INFO("queue_message_to_openai: Not requesting writable"
+		DEBUG_INFO("ws_message_enqueue: Not requesting writable"
 			   " (state=%d, client=%p)\n",
-				   g_oairt.ws_state, g_oairt.ws_client);
+			   g_oairt.ws_state, g_oairt.ws_client);
+	}
+}
+
+int queue_message_to_openai(const char *json_msg, size_t len,
+	void (*callback)(void *arg, int err), void *arg)
+{
+	struct ws_message *msg;
+
+	if (g_oairt.ws_state == WS_DISCONNECTED ||
+		g_oairt.ws_state == WS_DISCONNECTING) {
+		return ENOTCONN;
 	}
 
+	msg = ws_message_alloc(json_msg, len, callback, arg);
+	if (!msg)
+		return ENOMEM;
+
+	ws_message_enqueue(msg);
+
 	return 0;
- }
+}
 
  /* Queue message received from OpenAI */
  int queue_message_from_openai(const uint8_t *data, size_t len)

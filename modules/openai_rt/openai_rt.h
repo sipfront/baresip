@@ -35,6 +35,11 @@ struct ws_message {
 	size_t len;
 	void (*callback)(void *arg, int err);
 	void *arg;
+	/* A message bound to a tool-batch generation (the continuation
+	 * response.create after a tool batch) is purged from the queue
+	 * when that generation is reset, i.e. when its call ended. */
+	bool gen_bound;
+	unsigned gen;
 };
 
 /* Maximum prompt length in bytes (including NUL). */
