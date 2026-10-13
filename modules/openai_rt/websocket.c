@@ -282,7 +282,11 @@ static bool tool_exec_is_current(void)
 	bool ok;
 
 	pthread_mutex_lock(&tool_batch.mtx);
-	ok = tool_exec_gen == tool_batch.gen &&
+	/* call_active is written under this lock (tool_batch_call_boundary)
+	 * and gates Gemini too, which binds without tool_batch_begin()'s
+	 * activity check. */
+	ok = g_oairt.call_active &&
+	     tool_exec_gen == tool_batch.gen &&
 	     tool_exec_epoch == tool_batch.epoch;
 	pthread_mutex_unlock(&tool_batch.mtx);
 
