@@ -789,7 +789,19 @@ static void openai_dispatch_function_calls(struct json_object *response_obj,
 	if (!tool_batch_begin(runnable)) {
 		warning("openai_rt: %zu function call(s) of a response"
 			" started before the current call (or with no call"
-			" active) ignored\n", runnable);
+			" active) not executed\n", runnable);
+		/* The model still needs one output per call to go on */
+		for (i = 0; i < n; i++) {
+			struct json_object *item =
+				json_object_array_get_idx(output, i);
+			if (!openai_item_is_runnable_call(item, false))
+				continue;
+			tool_call_answer_ended(
+				get_json_string_field(item, "call_id",
+						      "function_call"),
+				get_json_string_field(item, "name",
+						      "function_call"));
+		}
 		return;
 	}
 
@@ -1018,7 +1030,18 @@ static int openai_parse_message(const char *json_str,
 		struct json_object *error_obj = get_json_object_field(root,
 			"error",
 			"error");
-		if (error_obj) {
+		struct json_object *code = NULL;
+		/* response.cancel is sent at every call end without knowing
+		 * whether a response is active; the server's complaint
+		 * about an idle one is expected, not an error. */
+		if (error_obj &&
+		    json_object_object_get_ex(error_obj, "code", &code) &&
+		    json_object_is_type(code, json_type_string) &&
+		    strcmp(json_object_get_string(code),
+			   "response_cancel_not_active") == 0) {
+			DEBUG_INFO("no response to cancel at call end\n");
+		}
+		else if (error_obj) {
 			warning("openai_rt: AI model error: %s\n",
 				json_object_to_json_string(error_obj));
 		}

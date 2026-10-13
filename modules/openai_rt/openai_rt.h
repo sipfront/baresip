@@ -155,6 +155,9 @@ void tool_batch_note_response_created(void);
  * drop uncommitted input audio, so the ended call's conversation cannot
  * carry tool calls into the next call on the same connection. */
 void websocket_isolate_call_end(void);
+/* Answer a function call that is not executed because its call is over,
+ * so the reused conversation is not left waiting for the output. */
+void tool_call_answer_ended(const char *call_id, const char *name);
 unsigned tool_batch_current_gen(void);
 /* Generation of the tool execution running on the calling thread. */
 unsigned tool_exec_generation(void);
