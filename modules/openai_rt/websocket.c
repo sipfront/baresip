@@ -619,8 +619,18 @@ static void tool_batch_output_settled_locked(void)
  * response, so it is never bound to a generation or purged; only the
  * continuation is. It is bound to the session (epoch) though: after a
  * reconnect the conversation, and with it the call_id, is gone. */
+static void send_function_call_output_for_epoch(const char *call_id,
+	const char *name, const char *output, unsigned epoch);
+
 static void send_function_call_output_plain(const char *call_id,
 	const char *name, const char *output)
+{
+	send_function_call_output_for_epoch(call_id, name, output,
+					    tool_exec_epoch);
+}
+
+static void send_function_call_output_for_epoch(const char *call_id,
+	const char *name, const char *output, unsigned epoch)
 {
 	struct ai_model *model = get_ai_model();
 	struct ws_message *msg = NULL;
@@ -661,7 +671,7 @@ static void send_function_call_output_plain(const char *call_id,
 	 * so an output of the previous session cannot slip onto the queue
 	 * of the new one. Lock order tool_batch.mtx, then ws_mutex. */
 	pthread_mutex_lock(&tool_batch.mtx);
-	if (tool_exec_epoch != tool_batch.epoch) {
+	if (epoch != tool_batch.epoch) {
 		pthread_mutex_unlock(&tool_batch.mtx);
 		mem_deref(msg);
 		DEBUG_INFO("tool output of a previous session dropped"
@@ -719,6 +729,7 @@ static void wait_for_tts_drain(void)
 }
 
 struct deferred_tool_call {
+	struct le le;
 	char *call_id;
 	char *tool_name;
 	char *arguments;
@@ -726,11 +737,31 @@ struct deferred_tool_call {
 	unsigned epoch;
 	unsigned call_gen;
 	struct call *call;
+	bool running;    /* worker is executing it (delivers its own output) */
+	bool answered;   /* answered at the call boundary, worker only frees */
 };
+
+/* Deferred calls not yet executed. The call boundary answers the ones
+ * that are still waiting, so their function_call_output is queued before
+ * anything of the next call can be (OpenAI requires every output before
+ * the next response.create on the reused conversation). Lock order:
+ * deferred_mtx, then tool_batch.mtx. */
+static struct list deferred_calls;
+static pthread_mutex_t deferred_mtx = PTHREAD_MUTEX_INITIALIZER;
+
+static void deferred_tool_call_destructor(void *arg)
+{
+	struct deferred_tool_call *w = arg;
+
+	mem_deref(w->call_id);
+	mem_deref(w->tool_name);
+	mem_deref(w->arguments);
+}
 
 static void *deferred_tool_call_thread(void *arg)
 {
 	struct deferred_tool_call *w = arg;
+	bool run, answered;
 
 	wait_for_tts_drain();
 
@@ -738,24 +769,38 @@ static void *deferred_tool_call_thread(void *arg)
 	 * meanwhile the batch was reset and the model is no longer waiting
 	 * for this output. This is a pre-filter: the binding that cannot
 	 * race is the call carried by every queued action, checked on the
-	 * RE thread (calls.c, mq_action_is_current). */
+	 * RE thread (calls.c, mq_action_is_current). Decided under
+	 * deferred_mtx so the boundary either answered this call already
+	 * or sees it running and leaves the output to us. */
 	tool_exec_gen = w->gen;
 	tool_exec_call = w->call;
 	tool_exec_epoch = w->epoch;
 	tool_exec_call_gen = w->call_gen;
-	if (g_oairt.call_active && tool_batch_current_gen() == w->gen) {
+
+	pthread_mutex_lock(&deferred_mtx);
+	answered = w->answered;
+	run = !answered && g_oairt.call_active &&
+	      tool_batch_current_gen() == w->gen;
+	w->running = run;
+	if (answered)
+		list_unlink(&w->le);
+	pthread_mutex_unlock(&deferred_mtx);
+
+	if (run) {
 		execute_tool_call(w->call_id, w->tool_name, w->arguments,
 			false);
 	}
-	else {
+	else if (!answered) {
 		info("openai_rt: deferred tool '%s' not executed: call"
 		     " ended\n", w->tool_name);
 		tool_call_answer_ended(w->call_id, w->tool_name);
 	}
 
-	mem_deref(w->call_id);
-	mem_deref(w->tool_name);
-	mem_deref(w->arguments);
+	if (!answered) {
+		pthread_mutex_lock(&deferred_mtx);
+		list_unlink(&w->le);
+		pthread_mutex_unlock(&deferred_mtx);
+	}
 	mem_deref(w);
 	return NULL;
 }
@@ -767,7 +812,7 @@ static int defer_tool_call_until_tts_drained(const char *call_id,
 	pthread_t tid;
 	int err;
 
-	w = mem_zalloc(sizeof(*w), NULL);
+	w = mem_zalloc(sizeof(*w), deferred_tool_call_destructor);
 	if (!w)
 		return ENOMEM;
 
@@ -789,9 +834,16 @@ static int defer_tool_call_until_tts_drained(const char *call_id,
 	w->epoch = tool_exec_epoch;
 	w->call_gen = tool_exec_call_gen;
 
+	pthread_mutex_lock(&deferred_mtx);
+	list_append(&deferred_calls, &w->le, w);
+	pthread_mutex_unlock(&deferred_mtx);
+
 	err = pthread_create(&tid, NULL, deferred_tool_call_thread, w);
 	if (err) {
 		warning("openai_rt: failed to start deferred tool thread\n");
+		pthread_mutex_lock(&deferred_mtx);
+		list_unlink(&w->le);
+		pthread_mutex_unlock(&deferred_mtx);
 		goto out;
 	}
 
@@ -799,11 +851,48 @@ static int defer_tool_call_until_tts_drained(const char *call_id,
 	return 0;
 
 out:
-	mem_deref(w->call_id);
-	mem_deref(w->tool_name);
-	mem_deref(w->arguments);
 	mem_deref(w);
 	return err;
+}
+
+/* RE thread, right after the call boundary: answer every deferred call
+ * that is still waiting for the TTS drain, so the model has its output
+ * before the next call can queue a response.create. One that is already
+ * executing delivers its own output. */
+void tool_batch_answer_deferred(void)
+{
+	struct le *le;
+
+	for (;;) {
+		char *call_id = NULL, *name = NULL;
+		unsigned epoch = 0;
+		bool found = false;
+
+		pthread_mutex_lock(&deferred_mtx);
+		for (le = list_head(&deferred_calls); le; le = le->next) {
+			struct deferred_tool_call *w = le->data;
+
+			if (w->running || w->answered)
+				continue;
+			w->answered = true;
+			call_id = mem_ref(w->call_id);
+			name = mem_ref(w->tool_name);
+			epoch = w->epoch;
+			found = true;
+			break;
+		}
+		pthread_mutex_unlock(&deferred_mtx);
+
+		if (!found)
+			break;
+
+		info("openai_rt: deferred tool '%s' answered at call end\n",
+		     name);
+		send_function_call_output_for_epoch(
+			call_id, name, "Error: the call has ended", epoch);
+		mem_deref(call_id);
+		mem_deref(name);
+	}
 }
 
 

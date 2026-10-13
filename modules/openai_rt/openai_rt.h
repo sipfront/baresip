@@ -168,6 +168,9 @@ void tool_batch_call_boundary(bool call_active, struct call *call);
 unsigned tool_batch_current_call_gen(void);
 /* The established call tools are bound to (NULL between calls). */
 struct call *tool_batch_current_call(void);
+/* RE thread, right after a call boundary: answer every deferred tool
+ * still waiting, so its output precedes the next call's response.create. */
+void tool_batch_answer_deferred(void);
 /* Is the tool execution bound to the calling thread still the one the
  * current call and session are waiting for? */
 bool tool_exec_is_current(void);

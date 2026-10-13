@@ -534,6 +534,7 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 		 * longer active. Done atomically under the batch lock. */
 		if (bound_call) {
 			tool_batch_call_boundary(false, NULL);
+			tool_batch_answer_deferred();
 		}
 		else {
 			info("openai_rt: closed call is not the one tools are"
@@ -654,6 +655,7 @@ void calls_close(void)
 
 	/* Clear call state */
 	tool_batch_call_boundary(false, NULL);
+	tool_batch_answer_deferred();
 	g_oairt.current_call = NULL;
 	content_call_clear();
 
