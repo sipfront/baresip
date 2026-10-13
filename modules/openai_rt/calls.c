@@ -595,6 +595,8 @@ int calls_init(void)
 
 void calls_close(void)
 {
+	struct mqueue *mq;
+
 	DEBUG_INFO("Call management closing\n");
 
 	/* Set shutdown flag to prevent new mqueue operations */
@@ -606,9 +608,17 @@ void calls_close(void)
 	/* Persist any pending trace before tearing down */
 	trace_finalize_write();
 
-	/* Clean up message queue, then release every action that was
-	 * still queued in it (the mqueue drops pending events silently). */
-	calls_state.mq = mem_deref(calls_state.mq);
+	/* Detach the queue under the lock push_action() holds around
+	 * mqueue_push(), so no action can be pushed into a queue that is
+	 * being destroyed (a late pusher finds NULL and fails); then
+	 * destroy it and release every action that was still queued in
+	 * it (the mqueue drops pending events silently). */
+	pthread_mutex_lock(&actions_mtx);
+	mq = calls_state.mq;
+	calls_state.mq = NULL;
+	pthread_mutex_unlock(&actions_mtx);
+	mem_deref(mq);
+
 	pthread_mutex_lock(&actions_mtx);
 	while (!list_isempty(&actions_queued)) {
 		struct mq_action *a = list_ledata(list_head(&actions_queued));
