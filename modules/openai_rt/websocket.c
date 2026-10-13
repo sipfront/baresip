@@ -248,8 +248,15 @@ static struct {
 	 * CALL_INCOMING/CALL_OUTGOING of a second call and must not be
 	 * used for binding. */
 	struct call *call;
+	/* Tool executions in progress whose function_call_output is not
+	 * queued yet (OpenAI). They survive a call boundary (an api_call
+	 * can run for seconds); the next call's initial response.create
+	 * is held back until this is zero, because the model requires
+	 * every output before the next response on the reused
+	 * conversation. */
+	unsigned inflight;
 } tool_batch = { PTHREAD_MUTEX_INITIALIZER, 0, false, 0, 0, false, 0, 0,
-		 NULL };
+		 NULL, 0 };
 
 /* Generation and call of the tool execution running on this thread. Set
  * at the dispatcher entry of execute_tool_call() on the I/O thread and
@@ -277,6 +284,36 @@ unsigned tool_batch_current_call_gen(void)
 	pthread_mutex_unlock(&tool_batch.mtx);
 
 	return gen;
+}
+
+static void tool_batch_inflight_begin(void)
+{
+	if (g_oairt.backend_type != AI_BACKEND_OPENAI_REALTIME)
+		return;
+	pthread_mutex_lock(&tool_batch.mtx);
+	tool_batch.inflight++;
+	pthread_mutex_unlock(&tool_batch.mtx);
+}
+
+static void tool_batch_inflight_end(void)
+{
+	if (g_oairt.backend_type != AI_BACKEND_OPENAI_REALTIME)
+		return;
+	pthread_mutex_lock(&tool_batch.mtx);
+	if (tool_batch.inflight)
+		tool_batch.inflight--;
+	pthread_mutex_unlock(&tool_batch.mtx);
+}
+
+bool tool_batch_outputs_pending(void)
+{
+	bool pending;
+
+	pthread_mutex_lock(&tool_batch.mtx);
+	pending = tool_batch.inflight > 0;
+	pthread_mutex_unlock(&tool_batch.mtx);
+
+	return pending;
 }
 
 struct call *tool_batch_current_call(void)
@@ -1192,6 +1229,11 @@ static void execute_tool_call(const char *call_id,
 		return;
 	}
 
+	/* From here on this execution owes exactly one output, which every
+	 * branch below queues synchronously; the counter gates the next
+	 * call's response.create until it is queued. */
+	tool_batch_inflight_begin();
+
 	/* Process enabled tool calls */
 	if (strcmp(name, AI_TOOL_HANGUP_CALL.name) == 0) {
 		DEBUG_INFO("openai_rt: Executing hangup_call function\n");
@@ -1221,7 +1263,7 @@ static void execute_tool_call(const char *call_id,
 			send_function_call_output(call_id, name,
 			                          "Error: Failed to parse"
 						  " function arguments");
-			return;
+			goto out;
 		}
 
 		struct json_object *digits_obj = NULL;
@@ -1283,7 +1325,7 @@ static void execute_tool_call(const char *call_id,
 			send_function_call_output(call_id, name,
 			                          "Error: Failed to parse"
 						  " function arguments");
-			return;
+			goto out;
 		}
 
 		const char *method = NULL;
@@ -1359,7 +1401,7 @@ static void execute_tool_call(const char *call_id,
 			send_function_call_output(call_id, name,
 			                          "Error: Failed to parse"
 						  " function arguments");
-			return;
+			goto out;
 		}
 
 		if (parse_transfer_destination(args_obj,
@@ -1404,8 +1446,10 @@ static void execute_tool_call(const char *call_id,
 		 * conversation trace for the downstream task evaluator.
 		 * No side effect on the call -- record under the
 		 * caller-supplied label (with the full arguments as
-		 * payload) and acknowledge. The write goes through the RE
-		 * thread, bound to this call, like every call action. */
+		 * payload) and acknowledge. The write happens under the RE
+		 * lock after re-validating the execution, so "Recorded" is
+		 * only reported when the event really is in this call's
+		 * trace. */
 		struct json_object *args_obj = json_tokener_parse(arguments);
 		struct json_object *label_obj = NULL, *value_obj = NULL;
 		const char *label = NULL, *value = NULL;
@@ -1421,10 +1465,15 @@ static void execute_tool_call(const char *call_id,
 
 		if (label && *label && value && *value) {
 			DEBUG_INFO("openai_rt: Recording event '%s'\n", label);
-			if (calls_record_event(tool_exec_call, label,
-					       arguments) == 0) {
+			int rerr = calls_record_event(tool_exec_call, label,
+						      arguments);
+			if (rerr == 0) {
 				send_function_call_output(call_id, name,
 							  "Recorded");
+			}
+			else if (rerr == ECANCELED) {
+				send_function_call_output(call_id, name,
+					"Error: the call has ended");
 			}
 			else {
 				send_function_call_output(call_id, name,
@@ -1454,6 +1503,9 @@ static void execute_tool_call(const char *call_id,
 		            " tool call: %s", name);
 		send_function_call_output(call_id, name, error_msg);
 	}
+
+out:
+	tool_batch_inflight_end();
 }
 
 static void handle_function_call_cb(const char *call_id,
@@ -1871,6 +1923,9 @@ static void process_conversation_kick_pending(void)
 	if (!g_oairt.call_active)
 		return;
 	if (g_audio.response_created)
+		return;
+	/* Not before every output of a still running tool is queued */
+	if (tool_batch_outputs_pending())
 		return;
 
 	g_oairt.conversation_kick_pending = false;

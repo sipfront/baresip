@@ -174,6 +174,9 @@ void tool_batch_answer_deferred(void);
 /* Is the tool execution bound to the calling thread still the one the
  * current call and session are waiting for? */
 bool tool_exec_is_current(void);
+/* True while a tool execution still owes its function_call_output; the
+ * initial response.create of a call waits for it. */
+bool tool_batch_outputs_pending(void);
 /* Call generation of the tool execution running on the calling thread;
  * queued call actions carry it and are dropped if it is no longer the
  * current one. A WebSocket reconnect does not change it. */

@@ -16,7 +16,6 @@ enum call_mq_events {
 	MQ_SEND_DIGIT,
 	MQ_API_CALL,
 	MQ_TRANSFER,
-	MQ_RECORD_EVENT,
 	MQ_VOICEAI_CONTENT,
 };
 
@@ -102,8 +101,7 @@ struct mq_action {
 	struct call *call;
 	unsigned gen;
 	char key;
-	char *destination;   /* transfer destination / record_event label */
-	char *payload;       /* record_event arguments */
+	char *destination;   /* transfer destination */
 };
 
 static void mq_action_destructor(void *arg)
@@ -111,18 +109,16 @@ static void mq_action_destructor(void *arg)
 	struct mq_action *a = arg;
 
 	mem_deref(a->destination);
-	mem_deref(a->payload);
 }
 
 static bool mq_is_action(int id)
 {
 	return id == MQ_HANGUP || id == MQ_SEND_DIGIT ||
-	       id == MQ_TRANSFER || id == MQ_RECORD_EVENT;
+	       id == MQ_TRANSFER;
 }
 
 static int push_action(enum call_mq_events id, struct call *call,
-		       char key, const char *destination,
-		       const char *payload)
+		       char key, const char *destination)
 {
 	struct mq_action *a;
 	int err = 0;
@@ -136,8 +132,6 @@ static int push_action(enum call_mq_events id, struct call *call,
 	a->key = key;
 	if (destination)
 		err = str_dup(&a->destination, destination);
-	if (!err && payload)
-		err = str_dup(&a->payload, payload);
 	if (err) {
 		mem_deref(a);
 		return err;
@@ -308,23 +302,6 @@ static void mqueue_handler(int id, void *data, void *arg)
 				}
 			}
 
-			mem_deref(a);
-		}
-		break;
-
-	case MQ_RECORD_EVENT:
-		{
-			struct mq_action *a = data;
-
-			/* On the RE thread, like trace_reset() at the next
-			 * CALL_ESTABLISHED: an event of an ended call can
-			 * never land in the next call's trace. */
-			if (a && a->destination &&
-			    mq_action_is_current(a, "record_event")) {
-				trace_add_toolcall(a->destination,
-						   a->payload ? a->payload
-							      : "{}");
-			}
 			mem_deref(a);
 		}
 		break;
@@ -692,7 +669,7 @@ int calls_hangup(struct call *call)
 	}
 
 	DEBUG_INFO("calls_hangup: Queuing hangup request\n");
-	err = push_action(MQ_HANGUP, call, 0, NULL, NULL);
+	err = push_action(MQ_HANGUP, call, 0, NULL);
 	if (err) {
 		warning("openai_rt: Failed to queue hangup: %m\n", err);
 	}
@@ -737,7 +714,7 @@ void calls_send_digit(struct call *call, char key)
 	else {
 		DEBUG_INFO("calls_send_digit: Queuing digit '%c'\n", key);
 	}
-	err = push_action(MQ_SEND_DIGIT, call, key, NULL, NULL);
+	err = push_action(MQ_SEND_DIGIT, call, key, NULL);
 	if (err) {
 		warning("openai_rt: Failed to queue digit send: %m\n", err);
 	}
@@ -851,7 +828,7 @@ int calls_transfer(struct call *call, const char *destination)
 	}
 
 	DEBUG_INFO("calls_transfer: Queuing transfer to '%s'\n", destination);
-	err = push_action(MQ_TRANSFER, call, 0, destination, NULL);
+	err = push_action(MQ_TRANSFER, call, 0, destination);
 	if (err) {
 		warning("openai_rt: Failed to queue transfer: %m\n", err);
 		return err;
@@ -863,20 +840,18 @@ int calls_transfer(struct call *call, const char *destination)
 
 /**
  * Record a tool event into the conversation trace - thread-safe
- * The write happens on the RE thread, bound to the call the tool was
- * dispatched for, so it can neither race trace_reset() of the next call
- * nor land in that call's trace.
+ * Written under the RE lock after re-validating the execution: the call
+ * boundary and trace_reset() of the next call run on the RE thread only,
+ * so the check and the write cannot be separated by a call change, and
+ * the result reported to the model is the truth.
  */
 int calls_record_event(struct call *call, const char *label,
 		       const char *arguments)
 {
-	int err;
+	int err = 0;
 
 	if (calls_state.shutting_down)
 		return EINTR;
-
-	if (!calls_state.mq)
-		return EINVAL;
 
 	if (!label || !*label)
 		return EINVAL;
@@ -886,9 +861,12 @@ int calls_record_event(struct call *call, const char *label,
 		return ENOENT;
 	}
 
-	err = push_action(MQ_RECORD_EVENT, call, 0, label, arguments);
-	if (err)
-		warning("openai_rt: Failed to queue record_event: %m\n", err);
+	re_thread_enter();
+	if (tool_exec_is_current())
+		trace_add_toolcall(label, arguments ? arguments : "{}");
+	else
+		err = ECANCELED;
+	re_thread_leave();
 
 	return err;
 }
