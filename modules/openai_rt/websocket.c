@@ -232,7 +232,13 @@ static struct {
 	/* A response is in progress (response.created seen, no
 	 * response.done yet); cancelled at call end. */
 	bool response_active;
-} tool_batch = { PTHREAD_MUTEX_INITIALIZER, 0, false, 0, 0, false };
+	/* Bumped on every WebSocket disconnect and (re)connect. A tool
+	 * output belongs to the session it was dispatched in: across a
+	 * call boundary it is still delivered (same conversation, the
+	 * model waits for it), across a reconnect it is dropped (new
+	 * conversation, the call_id is unknown there). */
+	unsigned epoch;
+} tool_batch = { PTHREAD_MUTEX_INITIALIZER, 0, false, 0, 0, false, 0 };
 
 /* Generation and call of the tool execution running on this thread. Set
  * at the dispatcher entry of execute_tool_call() on the I/O thread and
@@ -243,6 +249,7 @@ static struct {
  * action is finally performed. */
 static _Thread_local unsigned tool_exec_gen;
 static _Thread_local struct call *tool_exec_call;
+static _Thread_local unsigned tool_exec_epoch;
 
 unsigned tool_exec_generation(void)
 {
@@ -312,6 +319,11 @@ bool tool_batch_begin(size_t n)
 		return true;
 
 	pthread_mutex_lock(&tool_batch.mtx);
+	/* The dispatching thread is the I/O thread, which also bumps the
+	 * epoch on connect/disconnect, so it cannot change mid-dispatch;
+	 * bind it even when the batch is refused, the refusal answers
+	 * the calls through send_function_call_output_plain(). */
+	tool_exec_epoch = tool_batch.epoch;
 	accept = g_oairt.call_active &&
 		 tool_batch.response_gen == tool_batch.gen;
 	if (accept) {
@@ -395,6 +407,18 @@ void tool_batch_reset(void)
 	tool_batch.gen++;
 	tool_batch_purge_stale_locked();
 	pthread_mutex_unlock(&tool_batch.mtx);
+}
+
+/* WebSocket disconnect or (re)connect: a new OpenAI session. Everything
+ * dispatched before belongs to a conversation that no longer exists. */
+static void tool_batch_new_session(void)
+{
+	pthread_mutex_lock(&tool_batch.mtx);
+	tool_batch.epoch++;
+	tool_batch.response_active = false;
+	pthread_mutex_unlock(&tool_batch.mtx);
+
+	tool_batch_reset();
 }
 
 /* Called with tool_batch.mtx held: deciding that the batch is complete,
@@ -487,13 +511,24 @@ static void tool_batch_output_settled_locked(void)
  * is reused across calls on this connection, and the model does not
  * continue while an output is missing. The output itself cannot start a
  * response, so it is never bound to a generation or purged; only the
- * continuation is. */
+ * continuation is. It is bound to the session (epoch) though: after a
+ * reconnect the conversation, and with it the call_id, is gone. */
 static void send_function_call_output_plain(const char *call_id,
 	const char *name, const char *output)
 {
 	struct ai_model *model = get_ai_model();
 	char *json_msg = NULL;
+	bool same_session;
 	int err;
+
+	pthread_mutex_lock(&tool_batch.mtx);
+	same_session = tool_exec_epoch == tool_batch.epoch;
+	pthread_mutex_unlock(&tool_batch.mtx);
+	if (!same_session) {
+		DEBUG_INFO("tool output of a previous session dropped"
+			   " (call_id %s)\n", call_id ? call_id : "");
+		return;
+	}
 
 	if (!model || !model->build_function_call_output) {
 		warning("openai_rt: AI model not initialized\n");
@@ -570,6 +605,7 @@ struct deferred_tool_call {
 	char *tool_name;
 	char *arguments;
 	unsigned gen;
+	unsigned epoch;
 	struct call *call;
 };
 
@@ -586,6 +622,7 @@ static void *deferred_tool_call_thread(void *arg)
 	 * RE thread (calls.c, mq_action_is_current). */
 	tool_exec_gen = w->gen;
 	tool_exec_call = w->call;
+	tool_exec_epoch = w->epoch;
 	if (g_oairt.call_active && tool_batch_current_gen() == w->gen) {
 		execute_tool_call(w->call_id, w->tool_name, w->arguments,
 			false);
@@ -629,6 +666,7 @@ static int defer_tool_call_until_tts_drained(const char *call_id,
 
 	w->gen = tool_exec_gen;
 	w->call = tool_exec_call;
+	w->epoch = tool_exec_epoch;
 
 	err = pthread_create(&tid, NULL, deferred_tool_call_thread, w);
 	if (err) {
@@ -1178,7 +1216,10 @@ static void handle_function_call_cb(const char *call_id,
 	 * batch, so bind here. The call binding is still enforced on the
 	 * RE thread for every queued action. */
 	if (g_oairt.backend_type != AI_BACKEND_OPENAI_REALTIME) {
-		tool_exec_gen = tool_batch_current_gen();
+		pthread_mutex_lock(&tool_batch.mtx);
+		tool_exec_gen = tool_batch.gen;
+		tool_exec_epoch = tool_batch.epoch;
+		pthread_mutex_unlock(&tool_batch.mtx);
 		tool_exec_call = g_oairt.current_call;
 	}
 
@@ -1240,7 +1281,7 @@ static void handle_response_done_cb(const char *response_json, void *arg)
 			 g_oairt.session_ready = false;
 			 g_oairt.session_cfg_applied = false;
 			 g_oairt.conversation_kick_pending = false;
-			 tool_batch_reset();
+			 tool_batch_new_session();
 
 			 send_session_update();
 
@@ -1305,7 +1346,7 @@ static void handle_response_done_cb(const char *response_json, void *arg)
 		 g_oairt.setup_sent = false;
 		 g_oairt.conversation_kick_pending = false;
 		 websocket_clear_message_queue();
-		 tool_batch_reset();
+		 tool_batch_new_session();
 		 break;
 
 	case LWS_CALLBACK_CLIENT_CLOSED:
@@ -1321,7 +1362,7 @@ static void handle_response_done_cb(const char *response_json, void *arg)
 		g_oairt.setup_sent = false;
 		g_oairt.conversation_kick_pending = false;
 		websocket_clear_message_queue();
-	tool_batch_reset();
+	tool_batch_new_session();
 		break;
 
 	 case LWS_CALLBACK_CLIENT_APPEND_HANDSHAKE_HEADER: {
@@ -1508,7 +1549,7 @@ static void handle_response_done_cb(const char *response_json, void *arg)
 	 g_oairt.setup_sent = false;
 	 g_oairt.conversation_kick_pending = false;
 	 websocket_clear_message_queue();
-	 tool_batch_reset();
+	 tool_batch_new_session();
 
 	 info("openai_rt: WebSocket disconnected from AI model\n");
  }
@@ -1989,7 +2030,7 @@ int queue_message_to_openai(const char *json_msg, size_t len,
 
 		 /* Clear message queues properly */
 	websocket_clear_message_queue();
-	tool_batch_reset();
+	tool_batch_new_session();
 
 	 /* Clean up mutex and condition variable */
 	 pthread_mutex_destroy(&g_oairt.ws_mutex);
