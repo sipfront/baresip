@@ -82,6 +82,74 @@ static void trace_write_tmr_handler(void *arg)
 }
 
 /* Message queue handler - executes in RE main thread */
+/* A call-bound action queued for the RE thread. It carries the call the
+ * tool was dispatched for and the tool-batch generation of that
+ * execution; the handler checks both against the current call before it
+ * acts. CALL_ESTABLISHED and CALL_CLOSED are processed on the same
+ * thread, so the check cannot race with a call change, and a tool
+ * worker that outlived its call (the WS stays up across calls) can no
+ * longer hang up, key into or transfer the next one. */
+struct mq_action {
+	struct call *call;
+	unsigned gen;
+	char key;
+	char *destination;
+};
+
+static void mq_action_destructor(void *arg)
+{
+	struct mq_action *a = arg;
+
+	mem_deref(a->destination);
+}
+
+static int push_action(enum call_mq_events id, struct call *call,
+		       char key, const char *destination)
+{
+	struct mq_action *a;
+	int err = 0;
+
+	a = mem_zalloc(sizeof(*a), mq_action_destructor);
+	if (!a)
+		return ENOMEM;
+
+	a->call = call;
+	a->gen = tool_exec_generation();
+	a->key = key;
+	if (destination)
+		err = str_dup(&a->destination, destination);
+	if (!err)
+		err = mqueue_push(calls_state.mq, id, a);
+	if (err)
+		mem_deref(a);
+
+	return err;
+}
+
+/* RE thread: is this action still aimed at the current call? */
+static bool mq_action_is_current(const struct mq_action *a,
+				 const char *what)
+{
+	if (!a)
+		return false;
+
+	if (!g_oairt.current_call) {
+		DEBUG_INFO("mqueue_handler: no active call, %s dropped\n",
+			   what);
+		return false;
+	}
+
+	if (a->call != g_oairt.current_call ||
+	    a->gen != tool_batch_current_gen()) {
+		info("openai_rt: %s for a call that is no longer current,"
+		     " dropped\n", what);
+		return false;
+	}
+
+	return true;
+}
+
+
 static void mqueue_handler(int id, void *data, void *arg)
 {
 	(void)arg;
@@ -102,41 +170,47 @@ static void mqueue_handler(int id, void *data, void *arg)
 
 	switch ((enum call_mq_events)id) {
 	case MQ_HANGUP:
-		DEBUG_INFO("mqueue_handler: Processing hangup request\n");
-		if (g_oairt.current_call) {
-			struct ua *ua = call_get_ua(g_oairt.current_call);
-			if (ua) {
-				ua_hangup(ua, g_oairt.current_call, 0, NULL);
+		{
+			struct mq_action *a = data;
+
+			DEBUG_INFO("mqueue_handler: Processing hangup"
+				   " request\n");
+			if (mq_action_is_current(a, "hangup")) {
+				struct ua *ua = call_get_ua(
+					g_oairt.current_call);
+				if (ua) {
+					ua_hangup(ua, g_oairt.current_call, 0,
+						  NULL);
+				}
+				else {
+					/* Fallback: at least send BYE */
+					call_hangup(g_oairt.current_call, 0,
+						    NULL);
+				}
 			}
-			else {
-				/* Fallback: at least send BYE */
-				call_hangup(g_oairt.current_call, 0, NULL);
-			}
-		}
-		else {
-			DEBUG_INFO("mqueue_handler: "
-				"No active call to hangup\n");
+			mem_deref(a);
 		}
 		break;
 
 	case MQ_SEND_DIGIT:
 		{
-			char key = (char)(uintptr_t)data;
-			if (key == KEYCODE_REL) {
-				DEBUG_INFO("mqueue_handler: Sending DTMF key "
-					"release (KEYCODE_REL)\n");
+			struct mq_action *a = data;
+
+			if (mq_action_is_current(a, "DTMF digit")) {
+				if (a->key == KEYCODE_REL) {
+					DEBUG_INFO("mqueue_handler: Sending"
+						   " DTMF key release"
+						   " (KEYCODE_REL)\n");
+				}
+				else {
+					DEBUG_INFO("mqueue_handler: "
+						   "Sending DTMF digit"
+						   " '%c'\n", a->key);
+				}
+				call_send_digit(g_oairt.current_call,
+						a->key);
 			}
-			else {
-				DEBUG_INFO("mqueue_handler: "
-					"Sending DTMF digit '%c'\n", key);
-			}
-			if (g_oairt.current_call) {
-				call_send_digit(g_oairt.current_call, key);
-			}
-			else {
-				DEBUG_INFO("mqueue_handler: "
-					"No active call to send digit\n");
-			}
+			mem_deref(a);
 		}
 		break;
 
@@ -156,16 +230,14 @@ static void mqueue_handler(int id, void *data, void *arg)
 
 	case MQ_TRANSFER:
 		{
-			char *destination = (char *)data;
+			struct mq_action *a = data;
 			int xfer_err;
 
-			if (!destination) {
+			if (a && !a->destination) {
 				warning("openai_rt: "
 					"transfer: missing destination\n");
-				break;
 			}
-
-			if (g_oairt.current_call) {
+			else if (mq_action_is_current(a, "transfer")) {
 				xfer_err = call_hold(g_oairt.current_call,
 					true);
 				if (xfer_err) {
@@ -174,22 +246,18 @@ static void mqueue_handler(int id, void *data, void *arg)
 				}
 
 				xfer_err = call_transfer(g_oairt.current_call,
-					destination);
+					a->destination);
 				if (xfer_err) {
 		warning("openai_rt: call_transfer to '%s' failed: %m\n",
-					        destination, xfer_err);
+					        a->destination, xfer_err);
 				}
 				else {
 		info("openai_rt: call transfer initiated to %s\n",
-					     destination);
+					     a->destination);
 				}
 			}
-			else {
-				warning("openai_rt: "
-					"transfer: no active call\n");
-			}
 
-			mem_deref(destination);
+			mem_deref(a);
 		}
 		break;
 
@@ -485,7 +553,7 @@ void calls_close(void)
  * This function can be called from any thread. The actual hangup
  * will be executed in the RE main event loop thread via mqueue.
  */
-void calls_hangup(void)
+void calls_hangup(struct call *call)
 {
 	int err;
 
@@ -499,8 +567,13 @@ void calls_hangup(void)
 		return;
 	}
 
+	if (!call) {
+		warning("openai_rt: calls_hangup: no call bound\n");
+		return;
+	}
+
 	DEBUG_INFO("calls_hangup: Queuing hangup request\n");
-	err = mqueue_push(calls_state.mq, MQ_HANGUP, NULL);
+	err = push_action(MQ_HANGUP, call, 0, NULL);
 	if (err) {
 		warning("openai_rt: Failed to queue hangup: %m\n", err);
 	}
@@ -512,9 +585,10 @@ void calls_hangup(void)
  * This function can be called from any thread. The actual digit send
  * will be executed in the RE main event loop thread via mqueue.
  *
+ * @param call Call the digit is bound to (dropped if no longer current)
  * @param key  DTMF digit to send (0-9, *, #, A-D)
  */
-void calls_send_digit(char key)
+void calls_send_digit(struct call *call, char key)
 {
 	int err;
 
@@ -530,6 +604,11 @@ void calls_send_digit(char key)
 		return;
 	}
 
+	if (!call) {
+		warning("openai_rt: calls_send_digit: no call bound\n");
+		return;
+	}
+
 	if (key == KEYCODE_REL) {
 		DEBUG_INFO("calls_send_digit: "
 			"Queuing key release (KEYCODE_REL)\n");
@@ -537,9 +616,7 @@ void calls_send_digit(char key)
 	else {
 		DEBUG_INFO("calls_send_digit: Queuing digit '%c'\n", key);
 	}
-	err = mqueue_push(calls_state.mq,
-		MQ_SEND_DIGIT,
-		(void *)(uintptr_t)key);
+	err = push_action(MQ_SEND_DIGIT, call, key, NULL);
 	if (err) {
 		warning("openai_rt: Failed to queue digit send: %m\n", err);
 	}
@@ -551,10 +628,11 @@ void calls_send_digit(char key)
  * This function can be called from any thread. It validates and sends
  * each digit in the string sequentially.
  *
+ * @param call    Call the digits are bound to
  * @param digits  String of DTMF digits to send (0-9, *, #, A-D)
  * @return 0 if success, error code otherwise
  */
-int calls_send_dtmf(const char *digits)
+int calls_send_dtmf(struct call *call, const char *digits)
 {
 	const char *p;
 
@@ -568,6 +646,11 @@ int calls_send_dtmf(const char *digits)
 		warning("openai_rt: "
 			"calls_send_dtmf: Empty or NULL digits string\n");
 		return EINVAL;
+	}
+
+	if (!call) {
+		warning("openai_rt: calls_send_dtmf: no call bound\n");
+		return ENOENT;
 	}
 
 	/* Validate that all characters are valid DTMF digits */
@@ -594,13 +677,13 @@ int calls_send_dtmf(const char *digits)
 		}
 
 		/* Send key press */
-		calls_send_digit(c);
+		calls_send_digit(call, c);
 
 		/* Wait for tone to be audible (100ms) */
 		sys_msleep(100);
 
 		/* Send key release to stop the tone */
-		calls_send_digit(KEYCODE_REL);
+		calls_send_digit(call, KEYCODE_REL);
 
 		/* Add inter-digit pause (except after the last digit) */
 		if (*(p + 1)) {
@@ -620,9 +703,8 @@ int calls_send_dtmf(const char *digits)
  * @param destination  SIP URI or phone number to transfer to
  * @return 0 if success, error code otherwise
  */
-int calls_transfer(const char *destination)
+int calls_transfer(struct call *call, const char *destination)
 {
-	char *dest_copy = NULL;
 	int err;
 
 	if (calls_state.shutting_down) {
@@ -642,23 +724,15 @@ int calls_transfer(const char *destination)
 		return EINVAL;
 	}
 
-	if (!g_oairt.current_call) {
+	if (!call) {
 		warning("openai_rt: calls_transfer: No active call\n");
 		return ENOENT;
 	}
 
-	err = str_dup(&dest_copy, destination);
-	if (err) {
-		warning("openai_rt: Failed to duplicate transfer "
-			"destination: %m\n", err);
-		return err;
-	}
-
 	DEBUG_INFO("calls_transfer: Queuing transfer to '%s'\n", destination);
-	err = mqueue_push(calls_state.mq, MQ_TRANSFER, dest_copy);
+	err = push_action(MQ_TRANSFER, call, 0, destination);
 	if (err) {
 		warning("openai_rt: Failed to queue transfer: %m\n", err);
-		mem_deref(dest_copy);
 		return err;
 	}
 

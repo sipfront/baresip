@@ -783,7 +783,12 @@ static void openai_dispatch_function_calls(struct json_object *response_obj,
 	if (!runnable)
 		return;
 
-	tool_batch_begin(runnable);
+	if (!tool_batch_begin(runnable)) {
+		warning("openai_rt: %zu function call(s) of a response"
+			" started before the current call (or with no call"
+			" active) ignored\n", runnable);
+		return;
+	}
 
 	for (i = 0; i < n; i++) {
 		struct json_object *item = json_object_array_get_idx(output,
@@ -841,7 +846,6 @@ static bool openai_event_is_ignored(const char *type)
 		"conversation.item.truncated",
 		"conversation.item.input_audio_transcription.delta",
 		"conversation.item.input_audio_transcription.segment",
-		"response.created",
 		"response.output_item.added",
 		"response.output_item.done",
 		"response.content_part.added",
@@ -911,6 +915,13 @@ static int openai_parse_message(const char *json_str,
 		if (speech_started_cb) {
 			speech_started_cb(cb_arg);
 		}
+	}
+	else if (strcmp(type, "response.created") == 0) {
+		/* Stamp the response with the current call generation so
+		 * that its function calls (in response.done) can be told
+		 * apart from a response the model started for a call that
+		 * has ended meanwhile. */
+		tool_batch_note_response_created();
 	}
 	else if (strcmp(type, "response.done") == 0) {
 		struct json_object *response_obj = get_json_object_field(root,

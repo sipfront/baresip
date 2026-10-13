@@ -214,22 +214,51 @@ static struct {
 	 * a deferred worker that outlives its call is stale and must
 	 * neither run nor settle a slot of the next call's batch. */
 	unsigned gen;
-} tool_batch = { PTHREAD_MUTEX_INITIALIZER, 0, false, 0 };
+	/* Generation in which the response now being generated was
+	 * created (response.created). A response.done whose response was
+	 * created before the current call must not run tools against it:
+	 * the WS stays up across calls and the model answers the previous
+	 * conversation turn. */
+	unsigned response_gen;
+} tool_batch = { PTHREAD_MUTEX_INITIALIZER, 0, false, 0, 0 };
 
-/* Generation of the tool execution running on this thread. Set at the
- * dispatcher entry of execute_tool_call() on the I/O thread and from
- * the captured value in a deferred worker, so that the settlement deep
- * inside send_function_call_output() can tell stale from current. */
+/* Generation and call of the tool execution running on this thread. Set
+ * at the dispatcher entry of execute_tool_call() on the I/O thread and
+ * from the captured values in a deferred worker, so that the settlement
+ * deep inside send_function_call_output() can tell stale from current,
+ * and so that every call action (calls.c) is bound to the call the tool
+ * was dispatched for rather than to whatever call is current when the
+ * action is finally performed. */
 static _Thread_local unsigned tool_exec_gen;
+static _Thread_local struct call *tool_exec_call;
 
-void tool_batch_begin(size_t n)
+unsigned tool_exec_generation(void)
 {
+	return tool_exec_gen;
+}
+
+void tool_batch_note_response_created(void)
+{
+	pthread_mutex_lock(&tool_batch.mtx);
+	tool_batch.response_gen = tool_batch.gen;
+	pthread_mutex_unlock(&tool_batch.mtx);
+}
+
+bool tool_batch_begin(size_t n)
+{
+	bool accept;
+
 	if (g_oairt.backend_type != AI_BACKEND_OPENAI_REALTIME || !n)
-		return;
+		return true;
 
 	pthread_mutex_lock(&tool_batch.mtx);
-	tool_batch.pending += n;
+	accept = g_oairt.call_active &&
+		 tool_batch.response_gen == tool_batch.gen;
+	if (accept)
+		tool_batch.pending += n;
 	pthread_mutex_unlock(&tool_batch.mtx);
+
+	return accept;
 }
 
 void tool_batch_reset(void)
@@ -241,7 +270,7 @@ void tool_batch_reset(void)
 	pthread_mutex_unlock(&tool_batch.mtx);
 }
 
-static unsigned tool_batch_current_gen(void)
+unsigned tool_batch_current_gen(void)
 {
 	unsigned gen;
 
@@ -342,6 +371,7 @@ struct deferred_tool_call {
 	char *tool_name;
 	char *arguments;
 	unsigned gen;
+	struct call *call;
 };
 
 static void *deferred_tool_call_thread(void *arg)
@@ -352,8 +382,11 @@ static void *deferred_tool_call_thread(void *arg)
 
 	/* Run only for the call this was deferred in. If that call ended
 	 * meanwhile the batch was reset and the model is no longer waiting
-	 * for this output; executing it would act on the next call. */
+	 * for this output. This is a pre-filter: the binding that cannot
+	 * race is the call carried by every queued action, checked on the
+	 * RE thread (calls.c, mq_action_is_current). */
 	tool_exec_gen = w->gen;
+	tool_exec_call = w->call;
 	if (g_oairt.call_active && tool_batch_current_gen() == w->gen)
 		execute_tool_call(w->call_id, w->tool_name, w->arguments,
 			false);
@@ -393,6 +426,7 @@ static int defer_tool_call_until_tts_drained(const char *call_id,
 		goto out;
 
 	w->gen = tool_exec_gen;
+	w->call = tool_exec_call;
 
 	err = pthread_create(&tid, NULL, deferred_tool_call_thread, w);
 	if (err) {
@@ -465,6 +499,8 @@ static bool parse_transfer_dest_from_prompt(char *dest, size_t dest_len)
 
 struct gemini_xfer_after_tts {
 	char *destination;
+	struct call *call;
+	unsigned gen;
 };
 
 static void *gemini_xfer_after_tts_thread(void *arg)
@@ -473,8 +509,9 @@ static void *gemini_xfer_after_tts_thread(void *arg)
 
 	wait_for_tts_drain();
 
+	tool_exec_gen = w->gen;
 	if (g_oairt.call_active) {
-		int err = calls_transfer(w->destination);
+		int err = calls_transfer(w->call, w->destination);
 		if (err) {
 			warning("openai_rt: Gemini deferred transfer to '%s'"
 				" failed: %m\n",
@@ -502,6 +539,8 @@ static int start_transfer_after_tts(const char *destination)
 		mem_deref(w);
 		return err;
 	}
+	w->call = g_oairt.current_call;
+	w->gen = tool_batch_current_gen();
 
 	err = pthread_create(&tid, NULL, gemini_xfer_after_tts_thread, w);
 	if (err) {
@@ -669,10 +708,12 @@ static void execute_tool_call(const char *call_id,
 	bool allow_defer)
 {
 	/* The dispatch path (I/O thread) binds this execution to the
-	 * current batch generation; a deferred worker arrives with
-	 * allow_defer=false and its own captured generation. */
-	if (allow_defer)
+	 * current batch generation and call; a deferred worker arrives
+	 * with allow_defer=false and its own captured values. */
+	if (allow_defer) {
 		tool_exec_gen = tool_batch_current_gen();
+		tool_exec_call = g_oairt.current_call;
+	}
 
 	/* Validate that the tool call is enabled in configuration */
 	if (!ai_model_is_tool_enabled(name, g_oairt.enabled_tools)) {
@@ -707,7 +748,7 @@ static void execute_tool_call(const char *call_id,
 		DEBUG_INFO("openai_rt: Executing hangup_call function\n");
 		/* The call is over: no continuation after this batch */
 		tool_batch_mark_hangup();
-		calls_hangup();
+		calls_hangup(tool_exec_call);
 		send_function_call_output(call_id, name, "Call hung up");
 	}
 	else if (strcmp(name, AI_TOOL_SEND_DTMF.name) == 0) {
@@ -735,7 +776,8 @@ static void execute_tool_call(const char *call_id,
 			const char *digits =
 				json_object_get_string(digits_obj);
 			if (digits && *digits) {
-				int err = calls_send_dtmf(digits);
+				int err = calls_send_dtmf(tool_exec_call,
+							  digits);
 				if (!err) {
 					char output[256];
 					re_snprintf(output, sizeof(output),
@@ -858,7 +900,7 @@ static void execute_tool_call(const char *call_id,
 			if (g_oairt.backend_type == AI_BACKEND_GEMINI_LIVE)
 				g_oairt.gemini_xfer_scheduled = true;
 
-			err = calls_transfer(destination);
+			err = calls_transfer(tool_exec_call, destination);
 			if (!err) {
 				char msg[256];
 				re_snprintf(msg, sizeof(msg), "Call transfer"

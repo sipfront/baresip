@@ -137,11 +137,18 @@ int websocket_wait_ready(int timeout_ms);
 const char *websocket_status_string(void);
 void send_session_update(void);
 /* Announce n tool-call outputs owed for the response being dispatched
- * (OpenAI backend); the last queued output sends the continuation. */
-void tool_batch_begin(size_t n);
+ * (OpenAI backend); the last queued output sends the continuation.
+ * Returns false when the response belongs to an earlier call (or no call
+ * is active): its tools must then not be run. */
+bool tool_batch_begin(size_t n);
 /* Drop any outstanding batch and start a new generation; called at call
  * boundaries so a tool deferred in one call cannot settle the next. */
 void tool_batch_reset(void);
+/* Record that the model started a response in the current generation. */
+void tool_batch_note_response_created(void);
+unsigned tool_batch_current_gen(void);
+/* Generation of the tool execution running on the calling thread. */
+unsigned tool_exec_generation(void);
 void websocket_kick_session_setup(void);
 int queue_message_to_openai(const char *json_msg, size_t len,
 			    void (*callback)(void *arg, int err),
@@ -309,10 +316,12 @@ struct audio_frame *audio_get_next_write_frame(void);
 void audio_free_frame(struct audio_frame *frame);
 
 /* Call management functions accessible via tools */
-void calls_hangup(void);
-void calls_send_digit(char key);
-int calls_send_dtmf(const char *digits);
-int calls_transfer(const char *destination);
+/* Call actions are bound to the call the tool was dispatched for and
+ * dropped on the RE thread if that call is no longer the current one. */
+void calls_hangup(struct call *call);
+void calls_send_digit(struct call *call, char key);
+int calls_send_dtmf(struct call *call, const char *digits);
+int calls_transfer(struct call *call, const char *destination);
 int calls_api_call(const char *method, const char *uri,
 		   const char *content_type, const char *auth_type,
 		   const char *auth_username, const char *auth_password,
