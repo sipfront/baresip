@@ -1341,7 +1341,11 @@ static void send_audio_commit(void)
 		g_audio.response_created = true;
 	}
 
+	/* A response.create must not overtake the output of a tool that
+	 * is still running (possibly from the previous call); retried on
+	 * the next commit once it is queued. */
 	if (!g_audio.response_created && g_oairt.call_active &&
+		!tool_batch_outputs_pending() &&
 		model && model->build_response_create) {
 		err = model->build_response_create(g_oairt.prompt,
 			&response_msg);

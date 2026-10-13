@@ -19,6 +19,12 @@ enum call_mq_events {
 	MQ_VOICEAI_CONTENT,
 };
 
+/* Every queued call action is also kept on this list until the handler
+ * takes it, so that calls_close() can release what is still queued (or
+ * being pushed) when the mqueue is destroyed underneath it. */
+static struct list actions_queued;
+static pthread_mutex_t actions_mtx = PTHREAD_MUTEX_INITIALIZER;
+
 /* WS stays up across calls; Realtime/Live often delivers final transcripts
  * shortly after hangup. Defer writing conversation-trace.json so trailing
  * events land in the artifact. */
@@ -82,14 +88,121 @@ static void trace_write_tmr_handler(void *arg)
 }
 
 /* Message queue handler - executes in RE main thread */
+/* A call-bound action queued for the RE thread. It carries the call the
+ * tool was dispatched for and the call generation of that execution
+ * (bumped at call boundaries only, not on a WebSocket reconnect); the
+ * handler checks both against the current call before it acts.
+ * CALL_ESTABLISHED and CALL_CLOSED are processed on the same thread, so
+ * the check cannot race with a call change, and a tool
+ * worker that outlived its call (the WS stays up across calls) can no
+ * longer hang up, key into or transfer the next one. */
+struct mq_action {
+	struct le le;
+	struct call *call;
+	unsigned gen;
+	char key;
+	char *destination;   /* transfer destination */
+};
+
+static void mq_action_destructor(void *arg)
+{
+	struct mq_action *a = arg;
+
+	mem_deref(a->destination);
+}
+
+static bool mq_is_action(int id)
+{
+	return id == MQ_HANGUP || id == MQ_SEND_DIGIT ||
+	       id == MQ_TRANSFER;
+}
+
+static int push_action(enum call_mq_events id, struct call *call,
+		       char key, const char *destination)
+{
+	struct mq_action *a;
+	int err = 0;
+
+	a = mem_zalloc(sizeof(*a), mq_action_destructor);
+	if (!a)
+		return ENOMEM;
+
+	a->call = call;
+	a->gen = tool_exec_call_generation();
+	a->key = key;
+	if (destination)
+		err = str_dup(&a->destination, destination);
+	if (err) {
+		mem_deref(a);
+		return err;
+	}
+
+	pthread_mutex_lock(&actions_mtx);
+	list_append(&actions_queued, &a->le, a);
+	err = calls_state.mq ? mqueue_push(calls_state.mq, id, a) : EINVAL;
+	if (err)
+		list_unlink(&a->le);
+	pthread_mutex_unlock(&actions_mtx);
+	if (err)
+		mem_deref(a);
+
+	return err;
+}
+
+/* RE thread, or calls_close(): take an action off the queued list. */
+static void mq_action_taken(struct mq_action *a)
+{
+	pthread_mutex_lock(&actions_mtx);
+	list_unlink(&a->le);
+	pthread_mutex_unlock(&actions_mtx);
+}
+
+/* RE thread: is this action still aimed at the current call? */
+static bool mq_action_is_current(const struct mq_action *a,
+				 const char *what)
+{
+	struct call *bound = tool_batch_current_call();
+
+	if (!a)
+		return false;
+
+	if (!bound) {
+		DEBUG_INFO("mqueue_handler: no active call, %s dropped\n",
+			   what);
+		return false;
+	}
+
+	/* Against the call tools are bound to, not g_oairt.current_call,
+	 * which a second incoming/outgoing call rewrites before any
+	 * boundary. */
+	if (a->call != bound ||
+	    a->gen != tool_batch_current_call_gen()) {
+		info("openai_rt: %s for a call that is no longer current,"
+		     " dropped\n", what);
+		return false;
+	}
+
+	return true;
+}
+
+
 static void mqueue_handler(int id, void *data, void *arg)
 {
 	(void)arg;
 
-	/* Ignore events during shutdown to prevent crashes */
-	if (calls_state.shutting_down) {
+	if (mq_is_action(id) && data)
+		mq_action_taken(data);
+
+	/* Ignore events during shutdown to prevent crashes; the payloads
+	 * are ours to free either way. UA_EVENT_SHUTDOWN means the core is
+	 * destroying its call objects, so a queued call action must not
+	 * touch its call either. */
+	if (calls_state.shutting_down ||
+	    (calls_state.ua_shutdown && mq_is_action(id))) {
 		DEBUG_INFO("mqueue_handler: "
 			"Ignoring event %d during shutdown\n", id);
+		if (mq_is_action(id) || id == MQ_VOICEAI_CONTENT)
+			mem_deref(data);
 		return;
 	}
 
@@ -102,41 +215,47 @@ static void mqueue_handler(int id, void *data, void *arg)
 
 	switch ((enum call_mq_events)id) {
 	case MQ_HANGUP:
-		DEBUG_INFO("mqueue_handler: Processing hangup request\n");
-		if (g_oairt.current_call) {
-			struct ua *ua = call_get_ua(g_oairt.current_call);
-			if (ua) {
-				ua_hangup(ua, g_oairt.current_call, 0, NULL);
+		{
+			struct mq_action *a = data;
+
+			DEBUG_INFO("mqueue_handler: Processing hangup"
+				   " request\n");
+			if (mq_action_is_current(a, "hangup")) {
+				struct ua *ua = call_get_ua(
+					a->call);
+				if (ua) {
+					ua_hangup(ua, a->call, 0,
+						  NULL);
+				}
+				else {
+					/* Fallback: at least send BYE */
+					call_hangup(a->call, 0,
+						    NULL);
+				}
 			}
-			else {
-				/* Fallback: at least send BYE */
-				call_hangup(g_oairt.current_call, 0, NULL);
-			}
-		}
-		else {
-			DEBUG_INFO("mqueue_handler: "
-				"No active call to hangup\n");
+			mem_deref(a);
 		}
 		break;
 
 	case MQ_SEND_DIGIT:
 		{
-			char key = (char)(uintptr_t)data;
-			if (key == KEYCODE_REL) {
-				DEBUG_INFO("mqueue_handler: Sending DTMF key "
-					"release (KEYCODE_REL)\n");
+			struct mq_action *a = data;
+
+			if (mq_action_is_current(a, "DTMF digit")) {
+				if (a->key == KEYCODE_REL) {
+					DEBUG_INFO("mqueue_handler: Sending"
+						   " DTMF key release"
+						   " (KEYCODE_REL)\n");
+				}
+				else {
+					DEBUG_INFO("mqueue_handler: "
+						   "Sending DTMF digit"
+						   " '%c'\n", a->key);
+				}
+				call_send_digit(a->call,
+						a->key);
 			}
-			else {
-				DEBUG_INFO("mqueue_handler: "
-					"Sending DTMF digit '%c'\n", key);
-			}
-			if (g_oairt.current_call) {
-				call_send_digit(g_oairt.current_call, key);
-			}
-			else {
-				DEBUG_INFO("mqueue_handler: "
-					"No active call to send digit\n");
-			}
+			mem_deref(a);
 		}
 		break;
 
@@ -156,40 +275,34 @@ static void mqueue_handler(int id, void *data, void *arg)
 
 	case MQ_TRANSFER:
 		{
-			char *destination = (char *)data;
+			struct mq_action *a = data;
 			int xfer_err;
 
-			if (!destination) {
+			if (a && !a->destination) {
 				warning("openai_rt: "
 					"transfer: missing destination\n");
-				break;
 			}
-
-			if (g_oairt.current_call) {
-				xfer_err = call_hold(g_oairt.current_call,
+			else if (mq_action_is_current(a, "transfer")) {
+				xfer_err = call_hold(a->call,
 					true);
 				if (xfer_err) {
 		warning("openai_rt: call_hold before transfer failed: %m\n",
 					        xfer_err);
 				}
 
-				xfer_err = call_transfer(g_oairt.current_call,
-					destination);
+				xfer_err = call_transfer(a->call,
+					a->destination);
 				if (xfer_err) {
 		warning("openai_rt: call_transfer to '%s' failed: %m\n",
-					        destination, xfer_err);
+					        a->destination, xfer_err);
 				}
 				else {
 		info("openai_rt: call transfer initiated to %s\n",
-					     destination);
+					     a->destination);
 				}
 			}
-			else {
-				warning("openai_rt: "
-					"transfer: no active call\n");
-			}
 
-			mem_deref(destination);
+			mem_deref(a);
 		}
 		break;
 
@@ -239,6 +352,11 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 	if (ev == UA_EVENT_SHUTDOWN) {
 		DEBUG_INFO("UA shutdown - finalizing conversation trace\n");
 		calls_state.ua_shutdown = true;
+		/* The core is destroying its calls: no tool may act from
+		 * here on (api_call checks currency; call actions are
+		 * dropped by the handler), and nothing may stay owed. */
+		tool_batch_call_boundary(false, NULL);
+		tool_batch_answer_deferred();
 		trace_finalize_write();
 		return;
 	}
@@ -320,9 +438,15 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 			DEBUG_INFO("Call "
 				"established - checking session readiness\n");
 
-			/* Mark call as active */
-			g_oairt.call_active = true;
+			/* New call: invalidate everything the previous one
+			 * left behind and mark the call active in one step
+			 * under the batch lock, or the I/O thread could
+			 * pair this call's first response with the old
+			 * generation (tools refused as stale) or an old
+			 * response with the new one. current_call is set
+			 * first so a tool accepted right after binds to it. */
 			g_oairt.current_call = call;
+			tool_batch_call_boundary(true, call);
 			g_oairt.gemini_xfer_scheduled = false;
 			g_oairt.gemini_turn_had_audio = false;
 
@@ -376,8 +500,28 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 		break;
 
 	case UA_EVENT_CALL_CLOSED:
+		{
+		/* Only the call tools are bound to ends the tool state: a
+		 * second call that merely rang and closed must not end the
+		 * established one's. */
+		const bool bound_call = !tool_batch_current_call() ||
+					tool_batch_current_call() == call;
+
 		info("openai_rt: Call CLOSED\n");
 		DEBUG_INFO("Call closed - queuing end event\n");
+
+		/* Invalidate the tool state FIRST, before any cleanup below
+		 * that can take time: from here on no tool can settle this
+		 * call's batch or queue a continuation, and the call is no
+		 * longer active. Done atomically under the batch lock. */
+		if (bound_call) {
+			tool_batch_call_boundary(false, NULL);
+			tool_batch_answer_deferred();
+		}
+		else {
+			info("openai_rt: closed call is not the one tools are"
+			     " bound to, keeping tool state\n");
+		}
 
 		/* Keep content_call so mqueue VOICEAI_CONTENT (from
 		 * trace_flush below and trailing WS turns during the grace
@@ -395,8 +539,17 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 		/* Stop audio threads before marking call as inactive */
 		audio_stop_threads();
 
-		/* Mark call as inactive; keep Gemini session if WS stays up */
-		g_oairt.call_active = false;
+		/* The WS may stay up for the next call. Invalidate the tool
+		 * batch FIRST, so a tool finishing from here on can neither
+		 * settle this call's batch nor queue a continuation behind the
+		 * isolation events below; then mark the call inactive and
+		 * cancel what the model is still doing for it. A deferred
+		 * worker still waiting on this call can neither run against
+		 * nor settle the next one. */
+		/* Now that nothing of this call can reach the queue any
+		 * more, cancel what the model is still doing for it. */
+		if (bound_call)
+			websocket_isolate_call_end();
 		if (g_oairt.ws_state != WS_CONNECTED) {
 			g_oairt.session_ready = false;
 			g_oairt.session_cfg_applied = false;
@@ -409,6 +562,7 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 		/* Reset state */
 		g_oairt.speech_active = false;
 		break;
+		}
 
 	default:
 		/* Log other events for debugging */
@@ -449,6 +603,8 @@ int calls_init(void)
 
 void calls_close(void)
 {
+	struct mqueue *mq;
+
 	DEBUG_INFO("Call management closing\n");
 
 	/* Set shutdown flag to prevent new mqueue operations */
@@ -460,11 +616,28 @@ void calls_close(void)
 	/* Persist any pending trace before tearing down */
 	trace_finalize_write();
 
-	/* Clean up message queue */
-	calls_state.mq = mem_deref(calls_state.mq);
+	/* Detach the queue under the lock push_action() holds around
+	 * mqueue_push(), so no action can be pushed into a queue that is
+	 * being destroyed (a late pusher finds NULL and fails); then
+	 * destroy it and release every action that was still queued in
+	 * it (the mqueue drops pending events silently). */
+	pthread_mutex_lock(&actions_mtx);
+	mq = calls_state.mq;
+	calls_state.mq = NULL;
+	pthread_mutex_unlock(&actions_mtx);
+	mem_deref(mq);
+
+	pthread_mutex_lock(&actions_mtx);
+	while (!list_isempty(&actions_queued)) {
+		struct mq_action *a = list_ledata(list_head(&actions_queued));
+		list_unlink(&a->le);
+		mem_deref(a);
+	}
+	pthread_mutex_unlock(&actions_mtx);
 
 	/* Clear call state */
-	g_oairt.call_active = false;
+	tool_batch_call_boundary(false, NULL);
+	tool_batch_answer_deferred();
 	g_oairt.current_call = NULL;
 	content_call_clear();
 
@@ -476,25 +649,32 @@ void calls_close(void)
  * This function can be called from any thread. The actual hangup
  * will be executed in the RE main event loop thread via mqueue.
  */
-void calls_hangup(void)
+int calls_hangup(struct call *call)
 {
 	int err;
 
 	if (calls_state.shutting_down) {
 		DEBUG_INFO("calls_hangup: Ignoring hangup during shutdown\n");
-		return;
+		return EINTR;
 	}
 
 	if (!calls_state.mq) {
 		warning("openai_rt: calls_hangup: mqueue not initialized\n");
-		return;
+		return EINVAL;
+	}
+
+	if (!call) {
+		warning("openai_rt: calls_hangup: no call bound\n");
+		return ENOENT;
 	}
 
 	DEBUG_INFO("calls_hangup: Queuing hangup request\n");
-	err = mqueue_push(calls_state.mq, MQ_HANGUP, NULL);
+	err = push_action(MQ_HANGUP, call, 0, NULL);
 	if (err) {
 		warning("openai_rt: Failed to queue hangup: %m\n", err);
 	}
+
+	return err;
 }
 
 
@@ -503,9 +683,10 @@ void calls_hangup(void)
  * This function can be called from any thread. The actual digit send
  * will be executed in the RE main event loop thread via mqueue.
  *
+ * @param call Call the digit is bound to (dropped if no longer current)
  * @param key  DTMF digit to send (0-9, *, #, A-D)
  */
-void calls_send_digit(char key)
+void calls_send_digit(struct call *call, char key)
 {
 	int err;
 
@@ -521,6 +702,11 @@ void calls_send_digit(char key)
 		return;
 	}
 
+	if (!call) {
+		warning("openai_rt: calls_send_digit: no call bound\n");
+		return;
+	}
+
 	if (key == KEYCODE_REL) {
 		DEBUG_INFO("calls_send_digit: "
 			"Queuing key release (KEYCODE_REL)\n");
@@ -528,9 +714,7 @@ void calls_send_digit(char key)
 	else {
 		DEBUG_INFO("calls_send_digit: Queuing digit '%c'\n", key);
 	}
-	err = mqueue_push(calls_state.mq,
-		MQ_SEND_DIGIT,
-		(void *)(uintptr_t)key);
+	err = push_action(MQ_SEND_DIGIT, call, key, NULL);
 	if (err) {
 		warning("openai_rt: Failed to queue digit send: %m\n", err);
 	}
@@ -542,10 +726,11 @@ void calls_send_digit(char key)
  * This function can be called from any thread. It validates and sends
  * each digit in the string sequentially.
  *
+ * @param call    Call the digits are bound to
  * @param digits  String of DTMF digits to send (0-9, *, #, A-D)
  * @return 0 if success, error code otherwise
  */
-int calls_send_dtmf(const char *digits)
+int calls_send_dtmf(struct call *call, const char *digits)
 {
 	const char *p;
 
@@ -559,6 +744,11 @@ int calls_send_dtmf(const char *digits)
 		warning("openai_rt: "
 			"calls_send_dtmf: Empty or NULL digits string\n");
 		return EINVAL;
+	}
+
+	if (!call) {
+		warning("openai_rt: calls_send_dtmf: no call bound\n");
+		return ENOENT;
 	}
 
 	/* Validate that all characters are valid DTMF digits */
@@ -585,13 +775,13 @@ int calls_send_dtmf(const char *digits)
 		}
 
 		/* Send key press */
-		calls_send_digit(c);
+		calls_send_digit(call, c);
 
 		/* Wait for tone to be audible (100ms) */
 		sys_msleep(100);
 
 		/* Send key release to stop the tone */
-		calls_send_digit(KEYCODE_REL);
+		calls_send_digit(call, KEYCODE_REL);
 
 		/* Add inter-digit pause (except after the last digit) */
 		if (*(p + 1)) {
@@ -611,9 +801,8 @@ int calls_send_dtmf(const char *digits)
  * @param destination  SIP URI or phone number to transfer to
  * @return 0 if success, error code otherwise
  */
-int calls_transfer(const char *destination)
+int calls_transfer(struct call *call, const char *destination)
 {
-	char *dest_copy = NULL;
 	int err;
 
 	if (calls_state.shutting_down) {
@@ -633,27 +822,53 @@ int calls_transfer(const char *destination)
 		return EINVAL;
 	}
 
-	if (!g_oairt.current_call) {
+	if (!call) {
 		warning("openai_rt: calls_transfer: No active call\n");
 		return ENOENT;
 	}
 
-	err = str_dup(&dest_copy, destination);
-	if (err) {
-		warning("openai_rt: Failed to duplicate transfer "
-			"destination: %m\n", err);
-		return err;
-	}
-
 	DEBUG_INFO("calls_transfer: Queuing transfer to '%s'\n", destination);
-	err = mqueue_push(calls_state.mq, MQ_TRANSFER, dest_copy);
+	err = push_action(MQ_TRANSFER, call, 0, destination);
 	if (err) {
 		warning("openai_rt: Failed to queue transfer: %m\n", err);
-		mem_deref(dest_copy);
 		return err;
 	}
 
 	return 0;
+}
+
+
+/**
+ * Record a tool event into the conversation trace - thread-safe
+ * Written under the RE lock after re-validating the execution: the call
+ * boundary and trace_reset() of the next call run on the RE thread only,
+ * so the check and the write cannot be separated by a call change, and
+ * the result reported to the model is the truth.
+ */
+int calls_record_event(struct call *call, const char *label,
+		       const char *arguments)
+{
+	int err = 0;
+
+	if (calls_state.shutting_down)
+		return EINTR;
+
+	if (!label || !*label)
+		return EINVAL;
+
+	if (!call) {
+		warning("openai_rt: calls_record_event: no call bound\n");
+		return ENOENT;
+	}
+
+	re_thread_enter();
+	if (tool_exec_is_current())
+		trace_add_toolcall(label, arguments ? arguments : "{}");
+	else
+		err = ECANCELED;
+	re_thread_leave();
+
+	return err;
 }
 
 
@@ -736,6 +951,16 @@ int calls_api_call(const char *method, const char *uri,
 	DEBUG_INFO("calls_api_call: %s %s\n", method, uri);
 
 	re_thread_enter();
+
+	/* Serialized with the RE thread, the only one that runs the call
+	 * boundary: holding the RE lock from here to http_reqconn_send(),
+	 * CALL_CLOSED cannot overtake this check and the request cannot
+	 * go out for a call that has ended. */
+	if (!tool_exec_is_current()) {
+		warning("openai_rt: api_call not sent: call ended\n");
+		err = ECANCELED;
+		goto out;
+	}
 
 	ad = mem_zalloc(sizeof(*ad), api_call_data_destructor);
 	if (!ad) {
