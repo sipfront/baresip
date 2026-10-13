@@ -778,7 +778,7 @@ static void openai_dispatch_function_calls(struct json_object *response_obj,
 	for (i = 0; i < n; i++) {
 		if (openai_item_is_runnable_call(
 			    json_object_array_get_idx(output, i), true))
-			runnable++;
+			++runnable;
 	}
 	if (!runnable)
 		return;
