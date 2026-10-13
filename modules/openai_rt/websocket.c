@@ -248,12 +248,15 @@ static struct {
 	 * CALL_INCOMING/CALL_OUTGOING of a second call and must not be
 	 * used for binding. */
 	struct call *call;
-	/* Tool executions in progress whose function_call_output is not
-	 * queued yet (OpenAI). They survive a call boundary (an api_call
-	 * can run for seconds); the next call's initial response.create
-	 * is held back until this is zero, because the model requires
-	 * every output before the next response on the reused
-	 * conversation. */
+	/* Accepted function calls whose function_call_output is not
+	 * queued yet (OpenAI). Reserved when the batch is accepted, before
+	 * any execution can race a call boundary, and released on every
+	 * terminal output path. The reservations survive a call boundary
+	 * (an api_call can run for seconds); the next call's initial
+	 * response.create is held back until this is zero, because the
+	 * model requires every output before the next response on the
+	 * reused conversation. Dropped with the session: a new session
+	 * owes nothing from the old one. */
 	unsigned inflight;
 } tool_batch = { PTHREAD_MUTEX_INITIALIZER, 0, false, 0, 0, false, 0, 0,
 		 NULL, 0 };
@@ -286,22 +289,21 @@ unsigned tool_batch_current_call_gen(void)
 	return gen;
 }
 
-static void tool_batch_inflight_begin(void)
+/* Called with tool_batch.mtx held: one reserved output of the given
+ * session has been queued (or will never be, because that session is
+ * gone, in which case the reservation was already dropped). */
+static void tool_batch_inflight_release_locked(unsigned epoch)
 {
-	if (g_oairt.backend_type != AI_BACKEND_OPENAI_REALTIME)
-		return;
-	pthread_mutex_lock(&tool_batch.mtx);
-	tool_batch.inflight++;
-	pthread_mutex_unlock(&tool_batch.mtx);
+	if (epoch == tool_batch.epoch && tool_batch.inflight)
+		tool_batch.inflight--;
 }
 
-static void tool_batch_inflight_end(void)
+static void tool_batch_inflight_release(unsigned epoch)
 {
 	if (g_oairt.backend_type != AI_BACKEND_OPENAI_REALTIME)
 		return;
 	pthread_mutex_lock(&tool_batch.mtx);
-	if (tool_batch.inflight)
-		tool_batch.inflight--;
+	tool_batch_inflight_release_locked(epoch);
 	pthread_mutex_unlock(&tool_batch.mtx);
 }
 
@@ -435,6 +437,7 @@ bool tool_batch_begin(size_t n)
 		 tool_batch.response_gen == tool_batch.gen;
 	if (accept) {
 		tool_batch.pending += n;
+		tool_batch.inflight += n;
 		/* Bind the dispatching thread (the one that will now run
 		 * the callbacks) to the accepted generation and call, in
 		 * the same critical section as the acceptance. Sampling
@@ -559,6 +562,7 @@ static void tool_batch_new_session(void)
 	pthread_mutex_lock(&tool_batch.mtx);
 	tool_batch.epoch++;
 	tool_batch.response_active = false;
+	tool_batch.inflight = 0;
 	websocket_clear_message_queue();
 	tool_batch_reset_locked();
 	pthread_mutex_unlock(&tool_batch.mtx);
@@ -720,7 +724,8 @@ static void send_function_call_output_for_epoch(const char *call_id,
 }
 
 /* Answer a function call that will not be executed because the call it
- * was made for is over, so the model is not left waiting for it. */
+ * was made for is over, so the model is not left waiting for it. Used
+ * for calls that were never accepted into a batch (no reservation). */
 void tool_call_answer_ended(const char *call_id, const char *name)
 {
 	if (!call_id || !*call_id)
@@ -728,6 +733,13 @@ void tool_call_answer_ended(const char *call_id, const char *name)
 
 	send_function_call_output_plain(call_id, name,
 					"Error: the call has ended");
+}
+
+/* Same, for an accepted (reserved) execution of the calling thread. */
+static void tool_exec_answer_ended(const char *call_id, const char *name)
+{
+	tool_call_answer_ended(call_id, name);
+	tool_batch_inflight_release(tool_exec_epoch);
 }
 
 /* Queue the output of one tool call and settle it in the batch. On the
@@ -745,6 +757,7 @@ static void send_function_call_output(const char *call_id,
 		return;
 
 	pthread_mutex_lock(&tool_batch.mtx);
+	tool_batch_inflight_release_locked(tool_exec_epoch);
 	if (tool_exec_gen != tool_batch.gen) {
 		DEBUG_INFO("tool output of an ended call delivered without"
 			   " continuation\n");
@@ -841,7 +854,7 @@ static void *deferred_tool_call_thread(void *arg)
 	else if (owner == OWNER_WORKER) {
 		info("openai_rt: deferred tool '%s' not executed: call"
 		     " ended\n", w->tool_name);
-		tool_call_answer_ended(w->call_id, w->tool_name);
+		tool_exec_answer_ended(w->call_id, w->tool_name);
 	}
 
 	mem_deref(w);
@@ -933,6 +946,7 @@ void tool_batch_answer_deferred(void)
 		     name);
 		send_function_call_output_for_epoch(
 			call_id, name, "Error: the call has ended", epoch);
+		tool_batch_inflight_release(epoch);
 		mem_deref(call_id);
 		mem_deref(name);
 	}
@@ -1197,7 +1211,7 @@ static void execute_tool_call(const char *call_id,
 	if (!tool_exec_is_current()) {
 		info("openai_rt: tool '%s' not executed: call ended\n",
 		     name);
-		tool_call_answer_ended(call_id, name);
+		tool_exec_answer_ended(call_id, name);
 		return;
 	}
 
@@ -1228,11 +1242,6 @@ static void execute_tool_call(const char *call_id,
 		}
 		return;
 	}
-
-	/* From here on this execution owes exactly one output, which every
-	 * branch below queues synchronously; the counter gates the next
-	 * call's response.create until it is queued. */
-	tool_batch_inflight_begin();
 
 	/* Process enabled tool calls */
 	if (strcmp(name, AI_TOOL_HANGUP_CALL.name) == 0) {
@@ -1505,7 +1514,7 @@ static void execute_tool_call(const char *call_id,
 	}
 
 out:
-	tool_batch_inflight_end();
+	return;
 }
 
 static void handle_function_call_cb(const char *call_id,
