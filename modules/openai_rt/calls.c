@@ -337,6 +337,9 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 			/* Reset audio state for new call */
 			audio_reset_for_new_call();
 
+			/* No tool output of an earlier call may count here */
+			tool_batch_reset();
+
 			/* Kick session.update without blocking the UA event
 			 * chain (sndfile etc.) */
 			if (!websocket_is_ready()) {
@@ -397,6 +400,11 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 
 		/* Mark call as inactive; keep Gemini session if WS stays up */
 		g_oairt.call_active = false;
+
+		/* The WS may stay up for the next call: invalidate the tool
+		 * batch so a deferred worker still waiting on this call can
+		 * neither run against nor settle the next one. */
+		tool_batch_reset();
 		if (g_oairt.ws_state != WS_CONNECTED) {
 			g_oairt.session_ready = false;
 			g_oairt.session_cfg_applied = false;
@@ -466,6 +474,7 @@ void calls_close(void)
 	/* Clear call state */
 	g_oairt.call_active = false;
 	g_oairt.current_call = NULL;
+	tool_batch_reset();
 	content_call_clear();
 
 	DEBUG_INFO("Call management closed\n");

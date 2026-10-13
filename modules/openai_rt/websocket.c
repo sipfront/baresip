@@ -209,7 +209,18 @@ static struct {
 	pthread_mutex_t mtx;
 	size_t pending;
 	bool hangup;
-} tool_batch = { PTHREAD_MUTEX_INITIALIZER, 0, false };
+	/* Bumped at every call boundary (and WS reconnect). A tool
+	 * execution belongs to the generation it was dispatched under;
+	 * a deferred worker that outlives its call is stale and must
+	 * neither run nor settle a slot of the next call's batch. */
+	unsigned gen;
+} tool_batch = { PTHREAD_MUTEX_INITIALIZER, 0, false, 0 };
+
+/* Generation of the tool execution running on this thread. Set at the
+ * dispatcher entry of execute_tool_call() on the I/O thread and from
+ * the captured value in a deferred worker, so that the settlement deep
+ * inside send_function_call_output() can tell stale from current. */
+static _Thread_local unsigned tool_exec_gen;
 
 void tool_batch_begin(size_t n)
 {
@@ -221,15 +232,38 @@ void tool_batch_begin(size_t n)
 	pthread_mutex_unlock(&tool_batch.mtx);
 }
 
-static void tool_batch_reset(void)
+void tool_batch_reset(void)
 {
 	pthread_mutex_lock(&tool_batch.mtx);
 	tool_batch.pending = 0;
 	tool_batch.hangup = false;
+	tool_batch.gen++;
 	pthread_mutex_unlock(&tool_batch.mtx);
 }
 
-static void tool_batch_output_settled(const char *name)
+static unsigned tool_batch_current_gen(void)
+{
+	unsigned gen;
+
+	pthread_mutex_lock(&tool_batch.mtx);
+	gen = tool_batch.gen;
+	pthread_mutex_unlock(&tool_batch.mtx);
+
+	return gen;
+}
+
+/* Only the branch that actually hangs up marks the batch terminal; a
+ * rejected hangup_call (tool disabled, defer failed) answers with an
+ * error output and must still get its continuation. */
+static void tool_batch_mark_hangup(void)
+{
+	pthread_mutex_lock(&tool_batch.mtx);
+	if (tool_exec_gen == tool_batch.gen)
+		tool_batch.hangup = true;
+	pthread_mutex_unlock(&tool_batch.mtx);
+}
+
+static void tool_batch_output_settled(void)
 {
 	bool cont = false;
 
@@ -237,8 +271,12 @@ static void tool_batch_output_settled(const char *name)
 		return;
 
 	pthread_mutex_lock(&tool_batch.mtx);
-	if (name && strcmp(name, AI_TOOL_HANGUP_CALL.name) == 0)
-		tool_batch.hangup = true;
+	if (tool_exec_gen != tool_batch.gen) {
+		pthread_mutex_unlock(&tool_batch.mtx);
+		DEBUG_INFO("tool output from a previous call ignored for"
+			   " batch accounting\n");
+		return;
+	}
 	if (tool_batch.pending)
 		tool_batch.pending--;
 	if (tool_batch.pending == 0) {
@@ -286,7 +324,7 @@ static void send_function_call_output(const char *call_id,
 	}
 
 settle:
-	tool_batch_output_settled(name);
+	tool_batch_output_settled();
 }
 
 static void wait_for_tts_drain(void)
@@ -303,6 +341,7 @@ struct deferred_tool_call {
 	char *call_id;
 	char *tool_name;
 	char *arguments;
+	unsigned gen;
 };
 
 static void *deferred_tool_call_thread(void *arg)
@@ -311,9 +350,16 @@ static void *deferred_tool_call_thread(void *arg)
 
 	wait_for_tts_drain();
 
-	if (g_oairt.call_active)
+	/* Run only for the call this was deferred in. If that call ended
+	 * meanwhile the batch was reset and the model is no longer waiting
+	 * for this output; executing it would act on the next call. */
+	tool_exec_gen = w->gen;
+	if (g_oairt.call_active && tool_batch_current_gen() == w->gen)
 		execute_tool_call(w->call_id, w->tool_name, w->arguments,
 			false);
+	else
+		DEBUG_INFO("deferred tool '%s' dropped: call ended\n",
+			   w->tool_name);
 
 	mem_deref(w->call_id);
 	mem_deref(w->tool_name);
@@ -345,6 +391,8 @@ static int defer_tool_call_until_tts_drained(const char *call_id,
 	err = str_dup(&w->arguments, arguments ? arguments : "{}");
 	if (err)
 		goto out;
+
+	w->gen = tool_exec_gen;
 
 	err = pthread_create(&tid, NULL, deferred_tool_call_thread, w);
 	if (err) {
@@ -620,6 +668,12 @@ static void execute_tool_call(const char *call_id,
 	const char *name, const char *arguments,
 	bool allow_defer)
 {
+	/* The dispatch path (I/O thread) binds this execution to the
+	 * current batch generation; a deferred worker arrives with
+	 * allow_defer=false and its own captured generation. */
+	if (allow_defer)
+		tool_exec_gen = tool_batch_current_gen();
+
 	/* Validate that the tool call is enabled in configuration */
 	if (!ai_model_is_tool_enabled(name, g_oairt.enabled_tools)) {
 		warning("openai_rt: Tool call '%s' is not enabled in"
@@ -651,9 +705,10 @@ static void execute_tool_call(const char *call_id,
 	/* Process enabled tool calls */
 	if (strcmp(name, AI_TOOL_HANGUP_CALL.name) == 0) {
 		DEBUG_INFO("openai_rt: Executing hangup_call function\n");
+		/* The call is over: no continuation after this batch */
+		tool_batch_mark_hangup();
 		calls_hangup();
 		send_function_call_output(call_id, name, "Call hung up");
-		/* hangup_call suppresses the batch continuation */
 	}
 	else if (strcmp(name, AI_TOOL_SEND_DTMF.name) == 0) {
 		DEBUG_INFO("openai_rt: Executing send_dtmf function\n");

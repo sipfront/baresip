@@ -139,6 +139,9 @@ void send_session_update(void);
 /* Announce n tool-call outputs owed for the response being dispatched
  * (OpenAI backend); the last queued output sends the continuation. */
 void tool_batch_begin(size_t n);
+/* Drop any outstanding batch and start a new generation; called at call
+ * boundaries so a tool deferred in one call cannot settle the next. */
+void tool_batch_reset(void);
 void websocket_kick_session_setup(void);
 int queue_message_to_openai(const char *json_msg, size_t len,
 			    void (*callback)(void *arg, int err),
