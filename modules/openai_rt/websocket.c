@@ -433,13 +433,20 @@ static void tool_batch_purge_stale_locked(void)
 	pthread_mutex_unlock(&g_oairt.ws_mutex);
 }
 
-void tool_batch_reset(void)
+/* Called with tool_batch.mtx held: new batch generation, nothing owed,
+ * every queued continuation of the old generation purged. */
+static void tool_batch_reset_locked(void)
 {
-	pthread_mutex_lock(&tool_batch.mtx);
 	tool_batch.pending = 0;
 	tool_batch.hangup = false;
 	tool_batch.gen++;
 	tool_batch_purge_stale_locked();
+}
+
+void tool_batch_reset(void)
+{
+	pthread_mutex_lock(&tool_batch.mtx);
+	tool_batch_reset_locked();
 	pthread_mutex_unlock(&tool_batch.mtx);
 }
 
@@ -448,11 +455,14 @@ void tool_batch_reset(void)
  * call. */
 void tool_batch_call_boundary(void)
 {
+	/* One critical section: an in-flight tool either still matches
+	 * both generations and settles before this, or matches neither
+	 * afterwards. A gap between the two bumps would let it settle a
+	 * batch whose continuation the reset no longer purges. */
 	pthread_mutex_lock(&tool_batch.mtx);
 	tool_batch.call_gen++;
+	tool_batch_reset_locked();
 	pthread_mutex_unlock(&tool_batch.mtx);
-
-	tool_batch_reset();
 }
 
 /* WebSocket disconnect: the OpenAI session is gone and the next connect
@@ -470,9 +480,8 @@ static void tool_batch_new_session(void)
 	tool_batch.epoch++;
 	tool_batch.response_active = false;
 	websocket_clear_message_queue();
+	tool_batch_reset_locked();
 	pthread_mutex_unlock(&tool_batch.mtx);
-
-	tool_batch_reset();
 }
 
 /* Called with tool_batch.mtx held: deciding that the batch is complete,

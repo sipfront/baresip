@@ -471,15 +471,19 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 		/* Stop audio threads before marking call as inactive */
 		audio_stop_threads();
 
+		/* The WS may stay up for the next call. Invalidate the tool
+		 * batch FIRST, so a tool finishing from here on can neither
+		 * settle this call's batch nor queue a continuation behind the
+		 * isolation events below; then mark the call inactive and
+		 * cancel what the model is still doing for it. A deferred
+		 * worker still waiting on this call can neither run against
+		 * nor settle the next one. */
+		tool_batch_call_boundary();
+
 		/* Mark call as inactive; keep Gemini session if WS stays up */
 		g_oairt.call_active = false;
 
-		/* The WS may stay up for the next call: cancel what the model
-		 * is still doing for this one, and invalidate the tool batch
-		 * so a deferred worker still waiting on this call can neither
-		 * run against nor settle the next one. */
 		websocket_isolate_call_end();
-		tool_batch_call_boundary();
 		if (g_oairt.ws_state != WS_CONNECTED) {
 			g_oairt.session_ready = false;
 			g_oairt.session_cfg_applied = false;
