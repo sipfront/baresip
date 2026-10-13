@@ -314,8 +314,16 @@ bool tool_batch_begin(size_t n)
 	pthread_mutex_lock(&tool_batch.mtx);
 	accept = g_oairt.call_active &&
 		 tool_batch.response_gen == tool_batch.gen;
-	if (accept)
+	if (accept) {
 		tool_batch.pending += n;
+		/* Bind the dispatching thread (the one that will now run
+		 * the callbacks) to the accepted generation and call, in
+		 * the same critical section as the acceptance. Sampling
+		 * them again per callback would let a reset in between
+		 * relabel an old tool as belonging to the next call. */
+		tool_exec_gen = tool_batch.gen;
+		tool_exec_call = g_oairt.current_call;
+	}
 	pthread_mutex_unlock(&tool_batch.mtx);
 
 	return accept;
@@ -884,13 +892,10 @@ static void execute_tool_call(const char *call_id,
 	const char *name, const char *arguments,
 	bool allow_defer)
 {
-	/* The dispatch path (I/O thread) binds this execution to the
-	 * current batch generation and call; a deferred worker arrives
-	 * with allow_defer=false and its own captured values. */
-	if (allow_defer) {
-		tool_exec_gen = tool_batch_current_gen();
-		tool_exec_call = g_oairt.current_call;
-	}
+	/* tool_exec_gen / tool_exec_call are already bound for this
+	 * thread: by tool_batch_begin() on the dispatch path, by the
+	 * worker for a deferred call, by handle_function_call_cb() for
+	 * a backend without batch accounting. */
 
 	/* Validate that the tool call is enabled in configuration */
 	if (!ai_model_is_tool_enabled(name, g_oairt.enabled_tools)) {
@@ -1168,6 +1173,14 @@ static void handle_function_call_cb(const char *call_id,
 	const char *name, const char *arguments, void *arg)
 {
 	(void)arg;
+
+	/* OpenAI binds the thread in tool_batch_begin(); Gemini has no
+	 * batch, so bind here. The call binding is still enforced on the
+	 * RE thread for every queued action. */
+	if (g_oairt.backend_type != AI_BACKEND_OPENAI_REALTIME) {
+		tool_exec_gen = tool_batch_current_gen();
+		tool_exec_call = g_oairt.current_call;
+	}
 
 	execute_tool_call(call_id, name, arguments, true);
 }

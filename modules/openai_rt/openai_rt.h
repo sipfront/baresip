@@ -144,7 +144,9 @@ void send_session_update(void);
 /* Announce n tool-call outputs owed for the response being dispatched
  * (OpenAI backend); the last queued output sends the continuation.
  * Returns false when the response belongs to an earlier call (or no call
- * is active): its tools must then not be run. */
+ * is active): its tools must then not be run. On acceptance the calling
+ * thread is bound to that generation and call for the callbacks that
+ * follow. */
 bool tool_batch_begin(size_t n);
 /* Drop any outstanding batch and start a new generation; called at call
  * boundaries so a tool deferred in one call cannot settle the next. */
