@@ -375,6 +375,11 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 	if (ev == UA_EVENT_SHUTDOWN) {
 		DEBUG_INFO("UA shutdown - finalizing conversation trace\n");
 		calls_state.ua_shutdown = true;
+		/* The core is destroying its calls: no tool may act from
+		 * here on (api_call checks currency; call actions are
+		 * dropped by the handler), and nothing may stay owed. */
+		tool_batch_call_boundary(false, NULL);
+		tool_batch_answer_deferred();
 		trace_finalize_write();
 		return;
 	}

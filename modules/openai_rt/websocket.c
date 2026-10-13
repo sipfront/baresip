@@ -761,7 +761,7 @@ static void deferred_tool_call_destructor(void *arg)
 static void *deferred_tool_call_thread(void *arg)
 {
 	struct deferred_tool_call *w = arg;
-	bool run, answered;
+	enum { OWNER_BOUNDARY, OWNER_RUN, OWNER_WORKER } owner;
 
 	wait_for_tts_drain();
 
@@ -777,30 +777,36 @@ static void *deferred_tool_call_thread(void *arg)
 	tool_exec_epoch = w->epoch;
 	tool_exec_call_gen = w->call_gen;
 
+	/* One atomic ownership transition for the terminal output: the
+	 * boundary already answered it, or we run it (and deliver our
+	 * own output), or we claim the answer here. Unlinked in the same
+	 * step, so the boundary cannot touch it afterwards. */
 	pthread_mutex_lock(&deferred_mtx);
-	answered = w->answered;
-	run = !answered && g_oairt.call_active &&
-	      tool_batch_current_gen() == w->gen;
-	w->running = run;
-	if (answered)
-		list_unlink(&w->le);
+	if (w->answered) {
+		owner = OWNER_BOUNDARY;
+	}
+	else if (g_oairt.call_active &&
+		 tool_batch_current_gen() == w->gen) {
+		w->running = true;
+		owner = OWNER_RUN;
+	}
+	else {
+		w->answered = true;
+		owner = OWNER_WORKER;
+	}
+	list_unlink(&w->le);
 	pthread_mutex_unlock(&deferred_mtx);
 
-	if (run) {
+	if (owner == OWNER_RUN) {
 		execute_tool_call(w->call_id, w->tool_name, w->arguments,
 			false);
 	}
-	else if (!answered) {
+	else if (owner == OWNER_WORKER) {
 		info("openai_rt: deferred tool '%s' not executed: call"
 		     " ended\n", w->tool_name);
 		tool_call_answer_ended(w->call_id, w->tool_name);
 	}
 
-	if (!answered) {
-		pthread_mutex_lock(&deferred_mtx);
-		list_unlink(&w->le);
-		pthread_mutex_unlock(&deferred_mtx);
-	}
 	mem_deref(w);
 	return NULL;
 }
