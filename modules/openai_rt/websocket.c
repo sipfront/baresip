@@ -243,7 +243,13 @@ static struct {
 	 * reconnect bumps gen but must not invalidate an action for a
 	 * call that is still up. */
 	unsigned call_gen;
-} tool_batch = { PTHREAD_MUTEX_INITIALIZER, 0, false, 0, 0, false, 0, 0 };
+	/* The established call tools act on. Only the call boundary
+	 * changes it; g_oairt.current_call is also rewritten by
+	 * CALL_INCOMING/CALL_OUTGOING of a second call and must not be
+	 * used for binding. */
+	struct call *call;
+} tool_batch = { PTHREAD_MUTEX_INITIALIZER, 0, false, 0, 0, false, 0, 0,
+		 NULL };
 
 /* Generation and call of the tool execution running on this thread. Set
  * at the dispatcher entry of execute_tool_call() on the I/O thread and
@@ -271,6 +277,17 @@ unsigned tool_batch_current_call_gen(void)
 	pthread_mutex_unlock(&tool_batch.mtx);
 
 	return gen;
+}
+
+struct call *tool_batch_current_call(void)
+{
+	struct call *call;
+
+	pthread_mutex_lock(&tool_batch.mtx);
+	call = tool_batch.call;
+	pthread_mutex_unlock(&tool_batch.mtx);
+
+	return call;
 }
 
 /* Is the execution bound to this thread still the one the current call
@@ -372,7 +389,7 @@ bool tool_batch_begin(size_t n)
 		 * relabel an old tool as belonging to the next call. */
 		tool_exec_gen = tool_batch.gen;
 		tool_exec_call_gen = tool_batch.call_gen;
-		tool_exec_call = g_oairt.current_call;
+		tool_exec_call = tool_batch.call;
 	}
 	pthread_mutex_unlock(&tool_batch.mtx);
 
@@ -457,7 +474,7 @@ void tool_batch_reset(void)
 /* SIP call boundary (established, closed, module close): invalidate the
  * batch and every call action still queued or deferred for the old
  * call. */
-void tool_batch_call_boundary(bool call_active)
+void tool_batch_call_boundary(bool call_active, struct call *call)
 {
 	/* One critical section: an in-flight tool either still matches
 	 * both generations and settles before this, or matches neither
@@ -471,6 +488,7 @@ void tool_batch_call_boundary(bool call_active)
 	tool_batch.call_gen++;
 	tool_batch_reset_locked();
 	g_oairt.call_active = call_active;
+	tool_batch.call = call_active ? call : NULL;
 	pthread_mutex_unlock(&tool_batch.mtx);
 }
 
@@ -868,9 +886,11 @@ static int start_transfer_after_tts(const char *destination)
 		mem_deref(w);
 		return err;
 	}
-	w->call = g_oairt.current_call;
-	w->gen = tool_batch_current_gen();
-	w->call_gen = tool_batch_current_call_gen();
+	pthread_mutex_lock(&tool_batch.mtx);
+	w->call = tool_batch.call;
+	w->gen = tool_batch.gen;
+	w->call_gen = tool_batch.call_gen;
+	pthread_mutex_unlock(&tool_batch.mtx);
 
 	err = pthread_create(&tid, NULL, gemini_xfer_after_tts_thread, w);
 	if (err) {
@@ -1334,8 +1354,8 @@ static void handle_function_call_cb(const char *call_id,
 		tool_exec_gen = tool_batch.gen;
 		tool_exec_epoch = tool_batch.epoch;
 		tool_exec_call_gen = tool_batch.call_gen;
+		tool_exec_call = tool_batch.call;
 		pthread_mutex_unlock(&tool_batch.mtx);
-		tool_exec_call = g_oairt.current_call;
 	}
 
 	execute_tool_call(call_id, name, arguments, true);

@@ -161,10 +161,13 @@ void websocket_isolate_call_end(void);
  * so the reused conversation is not left waiting for the output. */
 void tool_call_answer_ended(const char *call_id, const char *name);
 unsigned tool_batch_current_gen(void);
-/* SIP call boundary: bumps the call generation, resets the batch and
- * sets g_oairt.call_active, all under the batch lock. */
-void tool_batch_call_boundary(bool call_active);
+/* SIP call boundary: bumps the call generation, resets the batch, sets
+ * g_oairt.call_active and the call tools act on, all under the batch
+ * lock. */
+void tool_batch_call_boundary(bool call_active, struct call *call);
 unsigned tool_batch_current_call_gen(void);
+/* The established call tools are bound to (NULL between calls). */
+struct call *tool_batch_current_call(void);
 /* Call generation of the tool execution running on the calling thread;
  * queued call actions carry it and are dropped if it is no longer the
  * current one. A WebSocket reconnect does not change it. */

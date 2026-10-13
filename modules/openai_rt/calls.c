@@ -167,16 +167,21 @@ static void mq_action_taken(struct mq_action *a)
 static bool mq_action_is_current(const struct mq_action *a,
 				 const char *what)
 {
+	struct call *bound = tool_batch_current_call();
+
 	if (!a)
 		return false;
 
-	if (!g_oairt.current_call) {
+	if (!bound) {
 		DEBUG_INFO("mqueue_handler: no active call, %s dropped\n",
 			   what);
 		return false;
 	}
 
-	if (a->call != g_oairt.current_call ||
+	/* Against the call tools are bound to, not g_oairt.current_call,
+	 * which a second incoming/outgoing call rewrites before any
+	 * boundary. */
+	if (a->call != bound ||
 	    a->gen != tool_batch_current_call_gen()) {
 		info("openai_rt: %s for a call that is no longer current,"
 		     " dropped\n", what);
@@ -220,14 +225,14 @@ static void mqueue_handler(int id, void *data, void *arg)
 				   " request\n");
 			if (mq_action_is_current(a, "hangup")) {
 				struct ua *ua = call_get_ua(
-					g_oairt.current_call);
+					a->call);
 				if (ua) {
-					ua_hangup(ua, g_oairt.current_call, 0,
+					ua_hangup(ua, a->call, 0,
 						  NULL);
 				}
 				else {
 					/* Fallback: at least send BYE */
-					call_hangup(g_oairt.current_call, 0,
+					call_hangup(a->call, 0,
 						    NULL);
 				}
 			}
@@ -250,7 +255,7 @@ static void mqueue_handler(int id, void *data, void *arg)
 						   "Sending DTMF digit"
 						   " '%c'\n", a->key);
 				}
-				call_send_digit(g_oairt.current_call,
+				call_send_digit(a->call,
 						a->key);
 			}
 			mem_deref(a);
@@ -281,14 +286,14 @@ static void mqueue_handler(int id, void *data, void *arg)
 					"transfer: missing destination\n");
 			}
 			else if (mq_action_is_current(a, "transfer")) {
-				xfer_err = call_hold(g_oairt.current_call,
+				xfer_err = call_hold(a->call,
 					true);
 				if (xfer_err) {
 		warning("openai_rt: call_hold before transfer failed: %m\n",
 					        xfer_err);
 				}
 
-				xfer_err = call_transfer(g_oairt.current_call,
+				xfer_err = call_transfer(a->call,
 					a->destination);
 				if (xfer_err) {
 		warning("openai_rt: call_transfer to '%s' failed: %m\n",
@@ -456,7 +461,7 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 			 * response with the new one. current_call is set
 			 * first so a tool accepted right after binds to it. */
 			g_oairt.current_call = call;
-			tool_batch_call_boundary(true);
+			tool_batch_call_boundary(true, call);
 			g_oairt.gemini_xfer_scheduled = false;
 			g_oairt.gemini_turn_had_audio = false;
 
@@ -537,10 +542,18 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 		 * worker still waiting on this call can neither run against
 		 * nor settle the next one. */
 		/* Mark call as inactive (keep Gemini session if WS stays up),
-		 * atomically with the invalidation. */
-		tool_batch_call_boundary(false);
-
-		websocket_isolate_call_end();
+		 * atomically with the invalidation. Only for the call tools
+		 * are bound to: a second call that merely rang and closed
+		 * must not end the established one's tool state. */
+		if (!tool_batch_current_call() ||
+		    tool_batch_current_call() == call) {
+			tool_batch_call_boundary(false, NULL);
+			websocket_isolate_call_end();
+		}
+		else {
+			info("openai_rt: closed call is not the one tools are"
+			     " bound to, keeping tool state\n");
+		}
 		if (g_oairt.ws_state != WS_CONNECTED) {
 			g_oairt.session_ready = false;
 			g_oairt.session_cfg_applied = false;
@@ -626,7 +639,7 @@ void calls_close(void)
 	pthread_mutex_unlock(&actions_mtx);
 
 	/* Clear call state */
-	tool_batch_call_boundary(false);
+	tool_batch_call_boundary(false, NULL);
 	g_oairt.current_call = NULL;
 	content_call_clear();
 
