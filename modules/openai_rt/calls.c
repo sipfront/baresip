@@ -200,8 +200,11 @@ static void mqueue_handler(int id, void *data, void *arg)
 		mq_action_taken(data);
 
 	/* Ignore events during shutdown to prevent crashes; the payloads
-	 * are ours to free either way. */
-	if (calls_state.shutting_down) {
+	 * are ours to free either way. UA_EVENT_SHUTDOWN means the core is
+	 * destroying its call objects, so a queued call action must not
+	 * touch its call either. */
+	if (calls_state.shutting_down ||
+	    (calls_state.ua_shutdown && mq_is_action(id))) {
 		DEBUG_INFO("mqueue_handler: "
 			"Ignoring event %d during shutdown\n", id);
 		if (mq_is_action(id) || id == MQ_VOICEAI_CONTENT)
@@ -952,6 +955,16 @@ int calls_api_call(const char *method, const char *uri,
 	DEBUG_INFO("calls_api_call: %s %s\n", method, uri);
 
 	re_thread_enter();
+
+	/* Serialized with the RE thread, the only one that runs the call
+	 * boundary: holding the RE lock from here to http_reqconn_send(),
+	 * CALL_CLOSED cannot overtake this check and the request cannot
+	 * go out for a call that has ended. */
+	if (!tool_exec_is_current()) {
+		warning("openai_rt: api_call not sent: call ended\n");
+		err = ECANCELED;
+		goto out;
+	}
 
 	ad = mem_zalloc(sizeof(*ad), api_call_data_destructor);
 	if (!ad) {

@@ -294,7 +294,7 @@ struct call *tool_batch_current_call(void)
  * and session are waiting for? Checked before every side effect that is
  * not routed through the RE thread (api_call, record_event); the call
  * actions are validated there, atomically with the call lifecycle. */
-static bool tool_exec_is_current(void)
+bool tool_exec_is_current(void)
 {
 	bool ok;
 
@@ -1216,6 +1216,10 @@ static void execute_tool_call(const char *call_id,
 				send_function_call_output(call_id, name,
 						api_output ? api_output
 						: "Success");
+			}
+			else if (err == ECANCELED) {
+				send_function_call_output(call_id, name,
+					"Error: the call has ended");
 			}
 			else {
 				char error_msg[256];

@@ -168,6 +168,9 @@ void tool_batch_call_boundary(bool call_active, struct call *call);
 unsigned tool_batch_current_call_gen(void);
 /* The established call tools are bound to (NULL between calls). */
 struct call *tool_batch_current_call(void);
+/* Is the tool execution bound to the calling thread still the one the
+ * current call and session are waiting for? */
+bool tool_exec_is_current(void);
 /* Call generation of the tool execution running on the calling thread;
  * queued call actions carry it and are dropped if it is no longer the
  * current one. A WebSocket reconnect does not change it. */
