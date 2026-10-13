@@ -232,8 +232,8 @@ static struct {
 	/* A response is in progress (response.created seen, no
 	 * response.done yet); cancelled at call end. */
 	bool response_active;
-	/* Bumped on every WebSocket disconnect and (re)connect. A tool
-	 * output belongs to the session it was dispatched in: across a
+	/* Bumped on every WebSocket disconnect. A tool output belongs
+	 * to the session it was dispatched in: across a
 	 * call boundary it is still delivered (same conversation, the
 	 * model waits for it), across a reconnect it is dropped (new
 	 * conversation, the call_id is unknown there). */
@@ -409,13 +409,21 @@ void tool_batch_reset(void)
 	pthread_mutex_unlock(&tool_batch.mtx);
 }
 
-/* WebSocket disconnect or (re)connect: a new OpenAI session. Everything
- * dispatched before belongs to a conversation that no longer exists. */
+/* WebSocket disconnect: the OpenAI session is gone and the next connect
+ * starts a new conversation. Everything dispatched before belongs to the
+ * old one. The epoch bump and the clearing of the outgoing queue are one
+ * critical section (tool_batch.mtx, then ws_mutex inside
+ * websocket_clear_message_queue), so an output of the old session can
+ * neither be left on the queue nor be enqueued after the clear: it is
+ * either cleared here or rejected by its epoch check. The connect side
+ * does not bump again: nothing is dispatched while connecting, and a
+ * second bump would strand nothing but could not help either. */
 static void tool_batch_new_session(void)
 {
 	pthread_mutex_lock(&tool_batch.mtx);
 	tool_batch.epoch++;
 	tool_batch.response_active = false;
+	websocket_clear_message_queue();
 	pthread_mutex_unlock(&tool_batch.mtx);
 
 	tool_batch_reset();
@@ -534,14 +542,19 @@ static void send_function_call_output_plain(const char *call_id,
 		return;
 	}
 
-	if (g_oairt.ws_state != WS_DISCONNECTED &&
-	    g_oairt.ws_state != WS_DISCONNECTING)
-		msg = ws_message_alloc(json_msg, str_len(json_msg), NULL,
-				       NULL);
+	if (g_oairt.ws_state == WS_DISCONNECTED ||
+	    g_oairt.ws_state == WS_DISCONNECTING) {
+		mem_deref(json_msg);
+		warning("openai_rt: Failed to queue"
+			" function_call_output: %m\n", ENOTCONN);
+		return;
+	}
+
+	msg = ws_message_alloc(json_msg, str_len(json_msg), NULL, NULL);
 	mem_deref(json_msg);
 	if (!msg) {
 		warning("openai_rt: Failed to queue"
-			" function_call_output: %m\n", ENOTCONN);
+			" function_call_output: %m\n", ENOMEM);
 		return;
 	}
 
@@ -1288,7 +1301,7 @@ static void handle_response_done_cb(const char *response_json, void *arg)
 			 g_oairt.session_ready = false;
 			 g_oairt.session_cfg_applied = false;
 			 g_oairt.conversation_kick_pending = false;
-			 tool_batch_new_session();
+			 tool_batch_reset();
 
 			 send_session_update();
 
@@ -1352,7 +1365,6 @@ static void handle_response_done_cb(const char *response_json, void *arg)
 		 g_oairt.session_cfg_applied = false;
 		 g_oairt.setup_sent = false;
 		 g_oairt.conversation_kick_pending = false;
-		 websocket_clear_message_queue();
 		 tool_batch_new_session();
 		 break;
 
@@ -1368,8 +1380,7 @@ static void handle_response_done_cb(const char *response_json, void *arg)
 		g_oairt.session_cfg_applied = false;
 		g_oairt.setup_sent = false;
 		g_oairt.conversation_kick_pending = false;
-		websocket_clear_message_queue();
-	tool_batch_new_session();
+		tool_batch_new_session();
 		break;
 
 	 case LWS_CALLBACK_CLIENT_APPEND_HANDSHAKE_HEADER: {
@@ -1555,7 +1566,6 @@ static void handle_response_done_cb(const char *response_json, void *arg)
 	 g_oairt.session_cfg_applied = false;
 	 g_oairt.setup_sent = false;
 	 g_oairt.conversation_kick_pending = false;
-	 websocket_clear_message_queue();
 	 tool_batch_new_session();
 
 	 info("openai_rt: WebSocket disconnected from AI model\n");
@@ -2036,7 +2046,6 @@ int queue_message_to_openai(const char *json_msg, size_t len,
 	 g_oairt.setup_sent = false;
 
 		 /* Clear message queues properly */
-	websocket_clear_message_queue();
 	tool_batch_new_session();
 
 	 /* Clean up mutex and condition variable */
