@@ -453,15 +453,20 @@ void tool_batch_reset(void)
 /* SIP call boundary (established, closed, module close): invalidate the
  * batch and every call action still queued or deferred for the old
  * call. */
-void tool_batch_call_boundary(void)
+void tool_batch_call_boundary(bool call_active)
 {
 	/* One critical section: an in-flight tool either still matches
 	 * both generations and settles before this, or matches neither
 	 * afterwards. A gap between the two bumps would let it settle a
-	 * batch whose continuation the reset no longer purges. */
+	 * batch whose continuation the reset no longer purges. The call's
+	 * activity flag changes in the same section, because
+	 * tool_batch_begin() reads both under this lock: a response must
+	 * never be accepted with the new generation and the old flag, nor
+	 * the other way round. */
 	pthread_mutex_lock(&tool_batch.mtx);
 	tool_batch.call_gen++;
 	tool_batch_reset_locked();
+	g_oairt.call_active = call_active;
 	pthread_mutex_unlock(&tool_batch.mtx);
 }
 

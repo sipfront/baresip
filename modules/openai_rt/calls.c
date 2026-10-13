@@ -449,15 +449,14 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 				"established - checking session readiness\n");
 
 			/* New call: invalidate everything the previous one
-			 * left behind BEFORE the call becomes visible as
-			 * active, or the I/O thread could stamp this call's
-			 * first response with the old generation and then
-			 * refuse its tools as stale. */
-			tool_batch_call_boundary();
-
-			/* Mark call as active */
-			g_oairt.call_active = true;
+			 * left behind and mark the call active in one step
+			 * under the batch lock, or the I/O thread could
+			 * pair this call's first response with the old
+			 * generation (tools refused as stale) or an old
+			 * response with the new one. current_call is set
+			 * first so a tool accepted right after binds to it. */
 			g_oairt.current_call = call;
+			tool_batch_call_boundary(true);
 			g_oairt.gemini_xfer_scheduled = false;
 			g_oairt.gemini_turn_had_audio = false;
 
@@ -537,10 +536,9 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 		 * cancel what the model is still doing for it. A deferred
 		 * worker still waiting on this call can neither run against
 		 * nor settle the next one. */
-		tool_batch_call_boundary();
-
-		/* Mark call as inactive; keep Gemini session if WS stays up */
-		g_oairt.call_active = false;
+		/* Mark call as inactive (keep Gemini session if WS stays up),
+		 * atomically with the invalidation. */
+		tool_batch_call_boundary(false);
 
 		websocket_isolate_call_end();
 		if (g_oairt.ws_state != WS_CONNECTED) {
@@ -628,9 +626,8 @@ void calls_close(void)
 	pthread_mutex_unlock(&actions_mtx);
 
 	/* Clear call state */
-	g_oairt.call_active = false;
+	tool_batch_call_boundary(false);
 	g_oairt.current_call = NULL;
-	tool_batch_call_boundary();
 	content_call_clear();
 
 	DEBUG_INFO("Call management closed\n");
