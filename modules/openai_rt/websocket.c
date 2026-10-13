@@ -517,18 +517,9 @@ static void send_function_call_output_plain(const char *call_id,
 	const char *name, const char *output)
 {
 	struct ai_model *model = get_ai_model();
+	struct ws_message *msg = NULL;
 	char *json_msg = NULL;
-	bool same_session;
 	int err;
-
-	pthread_mutex_lock(&tool_batch.mtx);
-	same_session = tool_exec_epoch == tool_batch.epoch;
-	pthread_mutex_unlock(&tool_batch.mtx);
-	if (!same_session) {
-		DEBUG_INFO("tool output of a previous session dropped"
-			   " (call_id %s)\n", call_id ? call_id : "");
-		return;
-	}
 
 	if (!model || !model->build_function_call_output) {
 		warning("openai_rt: AI model not initialized\n");
@@ -537,21 +528,37 @@ static void send_function_call_output_plain(const char *call_id,
 
 	err = model->build_function_call_output(call_id, name, output,
 		&json_msg);
-	if (err) {
+	if (err || !json_msg) {
 		warning("openai_rt: Failed to build"
-			" function_call_output: %m\n", err);
+			" function_call_output: %m\n", err ? err : EINVAL);
 		return;
 	}
 
-	if (json_msg) {
-		err = queue_message_to_openai(json_msg, str_len(json_msg),
-			NULL, NULL);
-		if (err) {
-			warning("openai_rt: Failed to queue"
-				" function_call_output: %m\n", err);
-		}
-		mem_deref(json_msg);
+	if (g_oairt.ws_state != WS_DISCONNECTED &&
+	    g_oairt.ws_state != WS_DISCONNECTING)
+		msg = ws_message_alloc(json_msg, str_len(json_msg), NULL,
+				       NULL);
+	mem_deref(json_msg);
+	if (!msg) {
+		warning("openai_rt: Failed to queue"
+			" function_call_output: %m\n", ENOTCONN);
+		return;
 	}
+
+	/* Session check and enqueue in one critical section with the
+	 * epoch bump of a disconnect/reconnect (tool_batch_new_session),
+	 * so an output of the previous session cannot slip onto the queue
+	 * of the new one. Lock order tool_batch.mtx, then ws_mutex. */
+	pthread_mutex_lock(&tool_batch.mtx);
+	if (tool_exec_epoch != tool_batch.epoch) {
+		pthread_mutex_unlock(&tool_batch.mtx);
+		mem_deref(msg);
+		DEBUG_INFO("tool output of a previous session dropped"
+			   " (call_id %s)\n", call_id ? call_id : "");
+		return;
+	}
+	ws_message_enqueue(msg);
+	pthread_mutex_unlock(&tool_batch.mtx);
 }
 
 /* Answer a function call that will not be executed because the call it
