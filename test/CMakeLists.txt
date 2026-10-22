@@ -17,6 +17,7 @@ add_executable(${PROJECT_NAME}
   jbuf.c
   menu.c
   message.c
+  mqtt.c
   net.c
   play.c
   stunuri.c

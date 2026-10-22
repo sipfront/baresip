@@ -14,6 +14,9 @@ struct mqtt {
 	int subqos;			/* QoS for subscribe */
 	int is_connected;
 	struct tmr tmr;
+	struct tmr tmr_conn;	/* Connect attempt timeout and retry */
+	uint32_t conn_attempts;	/* Connect attempts since the last CONNACK */
+	bool retry_pending;	/* Next connect attempt is scheduled */
 	re_sock_t fd;
 	struct re_fhs *fhs;
 };

@@ -28,19 +28,94 @@ static uint32_t mqttsubscribeqos = 0;
 
 
 static uint32_t broker_port = 1883;
+/* Time for one connect attempt (TCP, TLS, CONNACK) before retrying [ms] */
+static uint32_t connect_timeout = 3000;
+/* Random pause before the next connect attempt [ms]. Spreads the retries of
+ * many agents started at the same time (SIT-471). */
+static const uint32_t retry_delay_min = 500;
+static const uint32_t retry_delay_max = 2000;
+static const int keepalive = 60;
 
 static struct mqtt s_mqtt;
 
 extern int publish_buffered_messages(struct mqtt *mqtt);
 
+static void mqtt_connect_start(struct mqtt *mqtt);
+static void fd_handler(int flags, void *arg);
+
+
+static void tmr_retry(void *data)
+{
+	mqtt_connect_start(data);
+}
+
+
+/* Listen for writability only while libmosquitto has something to write
+ * (TCP connect, TLS handshake, pending packets); otherwise the socket would
+ * report writable all the time. */
+static void update_listen(struct mqtt *mqtt)
+{
+	int flags = FD_READ;
+	int err;
+
+	if (!mqtt->fhs)
+		return;
+
+	if (mosquitto_want_write(mqtt->mosq))
+		flags |= FD_WRITE;
+
+	err = fd_listen(&mqtt->fhs, mqtt->fd, flags, fd_handler, mqtt);
+	if (err)
+		warning("mqtt: fd_listen failed (%m)\n", err);
+}
+
+
+static void schedule_retry(struct mqtt *mqtt)
+{
+	uint32_t delay;
+
+	/* A lost connection is reported by the disconnect callback and by
+	 * the read/write that detected it; schedule only once. */
+	if (mqtt->retry_pending)
+		return;
+	mqtt->retry_pending = true;
+
+	delay = retry_delay_min +
+		rand_u32() % (retry_delay_max - retry_delay_min + 1);
+
+	mqtt->fhs = fd_close(mqtt->fhs);
+	tmr_cancel(&mqtt->tmr);
+
+	if (mqtt->conn_attempts)
+		warning("mqtt: not connected after attempt %u, "
+			"retrying in %u ms\n", mqtt->conn_attempts, delay);
+	else
+		warning("mqtt: reconnecting in %u ms\n", delay);
+
+	tmr_start(&mqtt->tmr_conn, delay, tmr_retry, mqtt);
+}
+
+
 static void fd_handler(int flags, void *arg)
 {
 	struct mqtt *mqtt = arg;
+	int ret;
 	(void)flags;
 
-	mosquitto_loop_read(mqtt->mosq, 1);
+	/* While connecting, loop_read also drives the TLS handshake */
+	ret = mosquitto_loop_read(mqtt->mosq, 1);
+	if (ret == MOSQ_ERR_SUCCESS)
+		ret = mosquitto_loop_write(mqtt->mosq, 1);
 
-	mosquitto_loop_write(mqtt->mosq, 1);
+	if (ret != MOSQ_ERR_SUCCESS && !mqtt->is_connected) {
+		if (!mqtt->retry_pending)
+			warning("mqtt: connect attempt failed (%s)\n",
+				mosquitto_strerror(ret));
+		schedule_retry(mqtt);
+		return;
+	}
+
+	update_listen(mqtt);
 }
 
 
@@ -51,10 +126,71 @@ static void tmr_handler(void *data)
 
 	tmr_start(&mqtt->tmr, 500, tmr_handler, mqtt);
 
+	if (!mqtt->is_connected)
+		return;
+
 	ret = mosquitto_loop_misc(mqtt->mosq);
 	if (ret != MOSQ_ERR_SUCCESS) {
 		warning("mqtt: error in loop (%s)\n", mosquitto_strerror(ret));
 	}
+
+	update_listen(mqtt);
+}
+
+
+static void tmr_connect_timeout(void *data)
+{
+	struct mqtt *mqtt = data;
+
+	if (mqtt->is_connected)
+		return;
+
+	warning("mqtt: no connection to %s:%d within %u ms\n",
+		broker_host, broker_port, connect_timeout);
+	schedule_retry(mqtt);
+}
+
+
+/*
+ * Starts one non-blocking connect attempt. The attempt ends with CONNACK
+ * (connect_callback), with a socket error (fd_handler) or after
+ * connect_timeout; the latter two schedule the next attempt. baresip keeps
+ * running meanwhile; events are buffered until connected (SIT-471).
+ */
+static void mqtt_connect_start(struct mqtt *mqtt)
+{
+	int ret;
+	int err;
+
+	++mqtt->conn_attempts;
+	mqtt->retry_pending = false;
+	mqtt->is_connected = 0;
+	mqtt->fhs = fd_close(mqtt->fhs);
+
+	info("mqtt: connecting to %s:%d (attempt %u)\n",
+	     broker_host, broker_port, mqtt->conn_attempts);
+
+	/* Closes a previous socket; DNS resolution still blocks briefly */
+	ret = mosquitto_connect_async(mqtt->mosq, broker_host, broker_port,
+				      keepalive);
+	if (ret != MOSQ_ERR_SUCCESS) {
+		warning("mqtt: failed to start connect to %s:%d (%s)\n",
+			broker_host, broker_port, mosquitto_strerror(ret));
+		schedule_retry(mqtt);
+		return;
+	}
+
+	mqtt->fd = mosquitto_socket(mqtt->mosq);
+	err = fd_listen(&mqtt->fhs, mqtt->fd, FD_READ, fd_handler, mqtt);
+	if (err) {
+		warning("mqtt: fd_listen failed (%m)\n", err);
+		schedule_retry(mqtt);
+		return;
+	}
+	update_listen(mqtt);
+
+	tmr_start(&mqtt->tmr, 500, tmr_handler, mqtt);
+	tmr_start(&mqtt->tmr_conn, connect_timeout, tmr_connect_timeout, mqtt);
 }
 
 
@@ -71,12 +207,15 @@ static void connect_callback(struct mosquitto *mosq, void *obj, int result)
 	if (result != MOSQ_ERR_SUCCESS) {
 		warning("mqtt: could not connect to broker (%s) \n",
 			mosquitto_strerror(result));
+		schedule_retry(mqtt);
 		return;
 	}
 
-	info("mqtt: connected to broker at %s:%d\n",
-	     broker_host, broker_port);
+	info("mqtt: connected to broker at %s:%d after %u attempt(s)\n",
+	     broker_host, broker_port, mqtt->conn_attempts);
 
+	tmr_cancel(&mqtt->tmr_conn);
+	mqtt->conn_attempts = 0;
 	mqtt->is_connected = 1;
 
 	err = publish_buffered_messages(mqtt);
@@ -91,31 +230,6 @@ static void connect_callback(struct mosquitto *mosq, void *obj, int result)
 }
 
 
-static void tmr_reconnect(void *data)
-{
-	struct mqtt *mqtt = data;
-	int err;
-
-	err = mosquitto_reconnect(mqtt->mosq);
-	if (err == MOSQ_ERR_SUCCESS) {
-		mqtt->fd = mosquitto_socket(mqtt->mosq);
-
-		err = fd_listen(&mqtt->fhs, mqtt->fd, FD_READ, fd_handler,
-				mqtt);
-		if (err) {
-			warning("mqtt: reconnect fd_listen failed\n");
-			return;
-		}
-		tmr_start(&mqtt->tmr, 500, tmr_handler, mqtt);
-		info("mqtt: reconnected\n");
-	}
-	else {
-		warning("mqtt: reconnect failed, will retry in 2 seconds\n");
-		tmr_start(&mqtt->tmr, 2000, tmr_reconnect, mqtt);
-	}
-}
-
-
 static void disconnect_callback(struct mosquitto *mosq, void *obj, int rc)
 {
 	struct mqtt *mqtt = obj;
@@ -126,19 +240,20 @@ static void disconnect_callback(struct mosquitto *mosq, void *obj, int rc)
 		return;
 
 	warning("mqtt: connection lost (%s)\n", mosquitto_strerror(rc));
-	tmr_cancel(&mqtt->tmr);
-	mqtt->fhs = fd_close(mqtt->fhs);
-	tmr_start(&mqtt->tmr, 1000, tmr_reconnect, mqtt);
+	mqtt->is_connected = 0;
+	schedule_retry(mqtt);
 }
 
 
 static int module_init(void)
 {
-	const int keepalive = 60;
 	int ret;
 	int err = 0;
 
 	tmr_init(&s_mqtt.tmr);
+	tmr_init(&s_mqtt.tmr_conn);
+	s_mqtt.conn_attempts = 0;
+	s_mqtt.retry_pending = false;
 
 	mosquitto_lib_init();
 
@@ -164,6 +279,7 @@ static int module_init(void)
  	conf_get_u32(conf_cur(), "mqtt_broker_port", &broker_port);
 	conf_get_str(conf_cur(), "mqtt_tls_alpn",
              tls_alpn, sizeof(tls_alpn));
+	conf_get_u32(conf_cur(), "mqtt_connect_timeout", &connect_timeout);
 
 	info("mqtt: connecting to broker at %s:%d as %s topic %s\n",
 		broker_host, broker_port, mqttclientid, mqttbasetopic);
@@ -225,30 +341,14 @@ static int module_init(void)
 			return ret == MOSQ_ERR_ERRNO ? errno : EIO;
 	}
 
-	ret = mosquitto_connect(s_mqtt.mosq, broker_host, broker_port,
-				keepalive);
-	if (ret != MOSQ_ERR_SUCCESS) {
-
-		err = ret == MOSQ_ERR_ERRNO ? errno : EIO;
-
-		warning("mqtt: failed to connect to %s:%d (%s)\n",
-			broker_host, broker_port,
-			mosquitto_strerror(ret));
-		return err;
-	}
-
-	tmr_start(&s_mqtt.tmr, 1, tmr_handler, &s_mqtt);
-
 	err = mqtt_publish_init(&s_mqtt);
 	if (err)
 		return err;
 
-	s_mqtt.fd = mosquitto_socket(s_mqtt.mosq);
+	/* Non-blocking: a slow or stalled broker connection must not keep
+	 * baresip from loading the other modules (ctrl_tcp) (SIT-471). */
 	s_mqtt.fhs = NULL;
-
-	err = fd_listen(&s_mqtt.fhs, s_mqtt.fd, FD_READ, fd_handler, &s_mqtt);
-	if (err)
-		return err;
+	mqtt_connect_start(&s_mqtt);
 
 	info("mqtt: module loaded\n");
 
@@ -265,6 +365,7 @@ static int module_close(void)
 	mqtt_subscribe_close();
 
 	tmr_cancel(&s_mqtt.tmr);
+	tmr_cancel(&s_mqtt.tmr_conn);
 
 	if (s_mqtt.mosq) {
 		int err = publish_buffered_messages(&s_mqtt);
