@@ -95,3 +95,9 @@ curl -X POST https://api.openai.com/v1/realtime/client_secrets \
 ```
 
 Use the returned `value` as your `openai_rt_api_key` in the baresip configuration.
+# Standalone
+
+`standalone/` builds this implementation as `sf-voiceai`, a stand-alone sound device on
+PulseAudio/PipeWire (far end from a source, model speech into a sink, events on stdout) for
+calls that do not run through baresip: the agent's Bluetooth and 5G-modem drivers. See
+`standalone/README.md`.
