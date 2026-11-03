@@ -224,9 +224,10 @@ static void end_turn(uint64_t at_ms)
 
 /*
  * A gap in the audio -- `gap_ms` of the wall clock with nothing decoded,
- * beyond the audio the last frame covers (gap_since) -- is silence: with the decoded silence before it, it ends an open turn
- * where the audio stopped being speech, and before a turn it forgets the
- * speech that had begun, so two bursts around a gap are not one start.
+ * beyond the audio the last frame covers (gap_since) -- is silence: with
+ * the decoded silence before it, it ends an open turn where the audio
+ * stopped being speech, and before a turn it forgets the speech that had
+ * begun, so two bursts around a gap are not one start.
  * Called under `lock`, by the gap timer and by decode() before resumed
  * audio is judged.
  */
