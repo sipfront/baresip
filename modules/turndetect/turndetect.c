@@ -128,6 +128,7 @@ struct turndetect_st {
 	size_t nbuf;
 	double floor;             /* energy: tracked noise floor, dBov */
 	bool floor_set;
+	uint64_t carry;           /* energy: samples short of a millisecond */
 };
 
 /* An event made where a decision falls, emitted on the main thread */
@@ -221,6 +222,31 @@ static void end_turn(uint64_t at_ms)
 
 
 /*
+ * A gap in the audio -- nothing decoded for `gap_ms` of the wall clock --
+ * is silence: with the decoded silence before it, it ends an open turn
+ * where the audio stopped being speech, and before a turn it forgets the
+ * speech that had begun, so two bursts around a gap are not one start.
+ * Called under `lock`, by the gap timer and by decode() before resumed
+ * audio is judged.
+ */
+static void gap(uint64_t gap_ms)
+{
+	if (callst.speaking) {
+		if (callst.silence_ms + gap_ms >= cfg.min_silence) {
+			debug("turndetect: %llu ms of silence, then no audio "
+			      "for %llu ms: the turn ends\n",
+			      (unsigned long long)callst.silence_ms,
+			      (unsigned long long)gap_ms);
+			end_turn(callst.audio_ms - callst.silence_ms);
+		}
+	}
+	else if (gap_ms >= cfg.min_silence) {
+		callst.voiced_ms = 0;
+	}
+}
+
+
+/*
  * One decision of `ms` milliseconds of audio: voiced or not. Both engines
  * end here, on the receive thread, under `lock`.
  */
@@ -303,6 +329,10 @@ static bool webrtc_rate_ok(uint32_t srate)
  */
 static int setup_engine(struct turndetect_st *st, const struct auframe *af)
 {
+	/* Not ready until the setup is through: a failed allocation below
+	 * makes the next frame try again instead of using a buffer that is
+	 * not there */
+	st->ready = false;
 	st->fmt   = af->fmt;
 	st->srate = af->srate;
 	st->ch    = af->ch ? af->ch : 1;
@@ -313,6 +343,7 @@ static int setup_engine(struct turndetect_st *st, const struct auframe *af)
 	st->buf   = mem_deref(st->buf);
 	st->nbuf  = 0;
 	st->chunk = 0;
+	st->carry = 0;
 	st->floor_set = false;
 
 	st->engine = cfg.engine;
@@ -411,12 +442,17 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 	if (!callst.established)
 		goto out;
 
+	/* The gap since the last frame counts as silence before this one */
+	gap(tmr_jiffies() - callst.last_audio_at);
 	callst.last_audio_at = tmr_jiffies();
 
 	if (st->engine == ENGINE_ENERGY) {
-		const uint32_t ms = (uint32_t)(af->sampc * 1000
-			/ ((uint64_t)af->srate * st->ch));
+		/* Whole milliseconds of audio, the rest carried to the next
+		 * frame: a 2.5 ms frame is not 2 ms */
+		const uint64_t samples = st->carry + af->sampc / st->ch;
+		const uint32_t ms = (uint32_t)(samples * 1000 / af->srate);
 
+		st->carry = samples - (uint64_t)ms * af->srate / 1000;
 		if (ms)
 			judge_level(st, auframe_level(af), ms);
 
@@ -447,8 +483,8 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 
 /*
  * The gap timer: a far end that sends nothing (silence suppression, a
- * stream that stopped) is silent by the wall clock. A turn open with no
- * audio for the hangover ends where the audio stopped.
+ * stream that stopped) is silent by the wall clock, which decode() cannot
+ * see while no frame arrives.
  */
 static void gap_handler(void *arg)
 {
@@ -458,12 +494,8 @@ static void gap_handler(void *arg)
 
 	mtx_lock(lock);
 
-	if (callst.established && callst.speaking
-	    && tmr_jiffies() - callst.last_audio_at >= cfg.min_silence) {
-		debug("turndetect: no audio for %u ms, the turn ends\n",
-		      cfg.min_silence);
-		end_turn(callst.audio_ms);
-	}
+	if (callst.established)
+		gap(tmr_jiffies() - callst.last_audio_at);
 
 	mtx_unlock(lock);
 }
