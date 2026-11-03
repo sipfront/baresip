@@ -728,6 +728,122 @@ static struct json_object *get_json_object_field(struct json_object *obj,
 	return field_obj;
 }
 
+/* A function_call item of response.output that the model is waiting on.
+ * An item whose status is present and not "completed" (response
+ * cancelled by barge-in, or arguments cut short) is skipped: the model
+ * does not wait for its output. A missing status is deliberately taken
+ * as completed: the GA API sets it on every output item today, and
+ * requiring it would silently disable every tool the day it is omitted,
+ * whereas a cancelled item always carries its status. */
+static bool openai_item_is_runnable_call(struct json_object *item,
+					 bool log_skipped)
+{
+	struct json_object *f = NULL;
+
+	if (!item || !json_object_object_get_ex(item, "type", &f) ||
+	    !json_object_is_type(f, json_type_string) ||
+	    strcmp(json_object_get_string(f), "function_call") != 0)
+		return false;
+
+	if (json_object_object_get_ex(item, "status", &f) &&
+	    json_object_is_type(f, json_type_string) &&
+	    strcmp(json_object_get_string(f), "completed") != 0) {
+		if (log_skipped)
+			warning("openai_rt: skipping function_call with"
+				" status '%s'\n", json_object_get_string(f));
+		return false;
+	}
+
+	return true;
+}
+
+/* Walk response.output of a response.done event and hand every completed
+ * function_call item to the tool dispatcher. gpt-realtime-2.x may emit
+ * several calls in one response; the batch size is announced first so
+ * that the continuation goes out once, after the last output. Arguments
+ * are logged for send_dtmf only: api_call carries credentials and
+ * record_event whatever the far end said. */
+static void openai_dispatch_function_calls(struct json_object *response_obj,
+		void (*function_call_cb)(const char *call_id,
+		const char *name,
+		const char *arguments,
+		void *arg),
+		void *cb_arg)
+{
+	struct json_object *output = NULL;
+	size_t i, n, runnable = 0;
+
+	if (!json_object_object_get_ex(response_obj, "output", &output) ||
+	    !json_object_is_type(output, json_type_array))
+		return;
+
+	n = json_object_array_length(output);
+	for (i = 0; i < n; i++) {
+		if (openai_item_is_runnable_call(
+			    json_object_array_get_idx(output, i), true))
+			++runnable;
+	}
+	if (!runnable)
+		return;
+
+	if (!tool_batch_begin(runnable)) {
+		warning("openai_rt: %zu function call(s) of a response"
+			" started before the current call (or with no call"
+			" active) not executed\n", runnable);
+		/* The model still needs one output per call to go on */
+		for (i = 0; i < n; i++) {
+			struct json_object *item =
+				json_object_array_get_idx(output, i);
+			if (!openai_item_is_runnable_call(item, false))
+				continue;
+			tool_call_answer_ended(
+				get_json_string_field(item, "call_id",
+						      "function_call"),
+				get_json_string_field(item, "name",
+						      "function_call"));
+		}
+		return;
+	}
+
+	for (i = 0; i < n; i++) {
+		struct json_object *item = json_object_array_get_idx(output,
+								      i);
+		const char *name, *call_id, *arguments;
+
+		if (!openai_item_is_runnable_call(item, false))
+			continue;
+
+		name = get_json_string_field(item, "name", "function_call");
+		call_id = get_json_string_field(item, "call_id",
+						"function_call");
+		arguments = get_json_string_field(item, "arguments",
+						  "function_call");
+		if (!arguments)
+			arguments = "{}";
+
+		if (!name || !call_id) {
+			/* Nothing we can answer; settle its slot so the
+			 * batch does not wait for it. */
+			warning("openai_rt: function_call item without name"
+				" or call_id, ignored\n");
+			function_call_cb(call_id ? call_id : "", "",
+					 arguments, cb_arg);
+			continue;
+		}
+
+		if (strcmp(name, AI_TOOL_SEND_DTMF.name) == 0)
+			info("openai_rt: function call %s(%s) call_id=%s\n",
+			     name, arguments, call_id);
+		else
+			info("openai_rt: function call %s call_id=%s"
+			     " (%zu bytes of arguments)\n",
+			     name, call_id, str_len(arguments));
+
+		function_call_cb(call_id, name, arguments, cb_arg);
+	}
+}
+
+
 /* Server events we receive on every turn but have no use for: lifecycle
  * markers whose payload is fully covered by the terminal events we do handle
  * (transcript .done / .completed, output_item.done, response.done). Kept out
@@ -745,8 +861,8 @@ static bool openai_event_is_ignored(const char *type)
 		"conversation.item.truncated",
 		"conversation.item.input_audio_transcription.delta",
 		"conversation.item.input_audio_transcription.segment",
-		"response.created",
 		"response.output_item.added",
+		"response.output_item.done",
 		"response.content_part.added",
 		"response.content_part.done",
 		"response.output_audio_transcript.delta",
@@ -815,40 +931,12 @@ static int openai_parse_message(const char *json_str,
 			speech_started_cb(cb_arg);
 		}
 	}
-	else if (strcmp(type, "response.output_item.done") == 0) {
-		struct json_object *item_obj = get_json_object_field(root,
-			"item",
-			"output_item.done");
-		if (item_obj) {
-			const char *item_type = get_json_string_field(item_obj,
-				"type",
-				"output_item.done");
-			if (item_type && strcmp(item_type,
-				"function_call") == 0) {
-				const char *name = get_json_string_field(
-					item_obj,
-					"name",
-					"function_call");
-				const char *call_id = get_json_string_field(
-					item_obj,
-					"call_id",
-					"function_call");
-				const char *arguments = get_json_string_field(
-					item_obj,
-					"arguments",
-					"function_call");
-
-				if (name
-					&& call_id
-					&& arguments
-					&& function_call_cb) {
-					function_call_cb(call_id,
-						name,
-						arguments,
-						cb_arg);
-				}
-			}
-		}
+	else if (strcmp(type, "response.created") == 0) {
+		/* Stamp the response with the current call generation so
+		 * that its function calls (in response.done) can be told
+		 * apart from a response the model started for a call that
+		 * has ended meanwhile. */
+		tool_batch_note_response_created();
 	}
 	else if (strcmp(type, "response.done") == 0) {
 		struct json_object *response_obj = get_json_object_field(root,
@@ -885,6 +973,19 @@ static int openai_parse_message(const char *json_str,
 			if (response_json) {
 				response_done_cb(response_json, cb_arg);
 			}
+		}
+
+		/* Function calls are executed from here, not from
+		 * response.output_item.done, so that their
+		 * function_call_output and the response.create that must
+		 * follow it are never sent while the calling response is
+		 * still active (OpenAI rejects that response.create with
+		 * conversation_already_has_active_response, and the model
+		 * then sits waiting for a continuation that never comes). */
+		if (response_obj && function_call_cb) {
+			openai_dispatch_function_calls(response_obj,
+						       function_call_cb,
+						       cb_arg);
 		}
 	}
 	else if (strcmp(type,
@@ -929,7 +1030,18 @@ static int openai_parse_message(const char *json_str,
 		struct json_object *error_obj = get_json_object_field(root,
 			"error",
 			"error");
-		if (error_obj) {
+		struct json_object *code = NULL;
+		/* response.cancel is sent at every call end without knowing
+		 * whether a response is active; the server's complaint
+		 * about an idle one is expected, not an error. */
+		if (error_obj &&
+		    json_object_object_get_ex(error_obj, "code", &code) &&
+		    json_object_is_type(code, json_type_string) &&
+		    strcmp(json_object_get_string(code),
+			   "response_cancel_not_active") == 0) {
+			DEBUG_INFO("no response to cancel at call end\n");
+		}
+		else if (error_obj) {
 			warning("openai_rt: AI model error: %s\n",
 				json_object_to_json_string(error_obj));
 		}
