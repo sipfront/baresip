@@ -415,7 +415,7 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 
 	if (st->engine == ENGINE_ENERGY) {
 		const uint32_t ms = (uint32_t)(af->sampc * 1000
-					       / ((uint64_t)af->srate * st->ch));
+			/ ((uint64_t)af->srate * st->ch));
 
 		if (ms)
 			judge_level(st, auframe_level(af), ms);
