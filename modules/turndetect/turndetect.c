@@ -516,7 +516,8 @@ static int cmd_status(struct re_printf *pf, void *arg)
 	return re_hprintf(pf,
 			  "turndetect: engine=%s mode=%u threshold=%d "
 			  "margin=%u min_speech=%u min_silence=%u "
-			  "established=%s speaking=%s turn=%u audio_ms=%llu\n",
+			  "established=%s speaking=%s turn=%u "
+			  "audio_ms=%llu\n",
 			  engine_name(cfg.engine), cfg.mode, cfg.threshold,
 			  cfg.margin, cfg.min_speech, cfg.min_silence,
 			  established ? "yes" : "no",
