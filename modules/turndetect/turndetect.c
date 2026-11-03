@@ -101,6 +101,7 @@ static struct {
  */
 static struct {
 	bool established;
+	uint32_t call_no;         /* calls established since the load  */
 	double established_wall;  /* seconds, the audio clock's zero   */
 	uint64_t audio_ms;        /* audio received since established  */
 	uint64_t last_audio_at;   /* jiffies of the last frame         */
@@ -135,6 +136,7 @@ struct turndetect_st {
 /* An event made where a decision falls, emitted on the main thread */
 struct turn_event {
 	enum ua_event ev;
+	uint32_t call_no;         /* the call the event is of          */
 	uint32_t turn;
 	uint64_t since_ms;
 	uint64_t duration_ms;
@@ -161,8 +163,19 @@ static double wall_now(void)
 static void mqueue_handler(int id, void *data, void *arg)
 {
 	struct turn_event *te = data;
+	bool stale;
 	(void)id;
 	(void)arg;
+
+	/* An event of a call that is over by the time the queue is read is
+	 * nobody's: not the next call's */
+	mtx_lock(lock);
+	stale = !callst.established || te->call_no != callst.call_no;
+	mtx_unlock(lock);
+	if (stale) {
+		mem_deref(te);
+		return;
+	}
 
 	if (te->ev == UA_EVENT_TURN_END) {
 		bevent_app_emit(te->ev, NULL,
@@ -199,6 +212,7 @@ static void emit(enum ua_event ev, uint32_t turn, uint64_t at_ms,
 		return;
 
 	te->ev          = ev;
+	te->call_no     = callst.call_no;
 	te->turn        = turn;
 	te->since_ms    = at_ms;
 	te->duration_ms = duration_ms;
@@ -530,15 +544,20 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 
 	switch (ev) {
 
-	case UA_EVENT_CALL_ESTABLISHED:
+	case UA_EVENT_CALL_ESTABLISHED: {
+		uint32_t call_no;
+
 		mtx_lock(lock);
+		call_no = callst.call_no + 1;
 		memset(&callst, 0, sizeof(callst));
+		callst.call_no          = call_no;
 		callst.established      = true;
 		callst.established_wall = wall_now();
 		callst.last_audio_at    = tmr_jiffies();
 		mtx_unlock(lock);
 		info("turndetect: call established, counting turns\n");
 		break;
+	}
 
 	case UA_EVENT_CALL_CLOSED:
 		mtx_lock(lock);
