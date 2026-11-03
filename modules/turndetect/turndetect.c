@@ -104,6 +104,7 @@ static struct {
 	double established_wall;  /* seconds, the audio clock's zero   */
 	uint64_t audio_ms;        /* audio received since established  */
 	uint64_t last_audio_at;   /* jiffies of the last frame         */
+	uint32_t last_frame_ms;   /* the audio that frame carried      */
 	uint32_t turn;            /* turns begun in this call          */
 	bool speaking;            /* inside a turn                     */
 	uint32_t voiced_ms;       /* speech so far, before a turn      */
@@ -222,8 +223,8 @@ static void end_turn(uint64_t at_ms)
 
 
 /*
- * A gap in the audio -- nothing decoded for `gap_ms` of the wall clock --
- * is silence: with the decoded silence before it, it ends an open turn
+ * A gap in the audio -- `gap_ms` of the wall clock with nothing decoded,
+ * beyond the audio the last frame covers (gap_since) -- is silence: with the decoded silence before it, it ends an open turn
  * where the audio stopped being speech, and before a turn it forgets the
  * speech that had begun, so two bursts around a gap are not one start.
  * Called under `lock`, by the gap timer and by decode() before resumed
@@ -231,6 +232,9 @@ static void end_turn(uint64_t at_ms)
  */
 static void gap(uint64_t gap_ms)
 {
+	if (!gap_ms)
+		return;
+
 	if (callst.speaking) {
 		if (callst.silence_ms + gap_ms >= cfg.min_silence) {
 			debug("turndetect: %llu ms of silence, then no audio "
@@ -312,6 +316,21 @@ static void judge_level(struct turndetect_st *st, double level, uint32_t ms)
 	}
 
 	judge(voiced, ms);
+}
+
+
+/*
+ * The gap since the last frame: the wall clock since it arrived, less the
+ * audio it carried -- a frame every 20 ms covers 20 ms, which is no gap,
+ * whatever min_silence is. Called under `lock`.
+ */
+static uint64_t gap_since(uint64_t now)
+{
+	const uint64_t elapsed = now > callst.last_audio_at
+		? now - callst.last_audio_at : 0;
+
+	return elapsed > callst.last_frame_ms
+		? elapsed - callst.last_frame_ms : 0;
 }
 
 
@@ -443,8 +462,10 @@ static int decode(struct aufilt_dec_st *aufilt_dec_st, struct auframe *af)
 		goto out;
 
 	/* The gap since the last frame counts as silence before this one */
-	gap(tmr_jiffies() - callst.last_audio_at);
-	callst.last_audio_at = tmr_jiffies();
+	gap(gap_since(tmr_jiffies()));
+	callst.last_audio_at  = tmr_jiffies();
+	callst.last_frame_ms  = (uint32_t)((uint64_t)af->sampc * 1000
+					  / ((uint64_t)af->srate * st->ch));
 
 	if (st->engine == ENGINE_ENERGY) {
 		/* Whole milliseconds of audio, the rest carried to the next
@@ -495,7 +516,7 @@ static void gap_handler(void *arg)
 	mtx_lock(lock);
 
 	if (callst.established)
-		gap(tmr_jiffies() - callst.last_audio_at);
+		gap(gap_since(tmr_jiffies()));
 
 	mtx_unlock(lock);
 }
