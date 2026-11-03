@@ -157,6 +157,10 @@ static const char *ua_event_class_name(enum ua_event ev)
 	case UA_EVENT_AUDIO_LATENCY_INCOMING:
 		return "audio_latency";
 
+	case UA_EVENT_TURN_START:
+	case UA_EVENT_TURN_END:
+		return "turn";
+
 	case UA_EVENT_SUB_NOTIFY:
 
 	default:
@@ -1243,6 +1247,8 @@ const char *uag_event_str(enum ua_event ev)
 	case UA_EVENT_VOICEAI_CONTENT:      return "VOICEAI_CONTENT";
 	case UA_EVENT_AUDIO_LATENCY_OUTGOING:  return "AUDIO_LATENCY_OUTGOING";
 	case UA_EVENT_AUDIO_LATENCY_INCOMING:  return "AUDIO_LATENCY_INCOMING";
+	case UA_EVENT_TURN_START:           return "TURN_START";
+	case UA_EVENT_TURN_END:             return "TURN_END";
 	case UA_EVENT_SUB_NOTIFY:			return "NOTIFY";
 	default: return "?";
 	}

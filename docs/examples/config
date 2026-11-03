@@ -118,6 +118,7 @@ module			g711.so
 module			auconv.so
 module			auresamp.so
 #module			vumeter.so
+#module			turndetect.so
 #module			sndfile.so
 #module			plc.so
 #module			webrtc_aec.so
@@ -307,3 +308,11 @@ video_selfview		window # {window,pip}
 
 # webrtc_aec
 # webrtc_aec_extended_filter		yes
+
+# turndetect (speaking turns of the far end: TURN_START / TURN_END events)
+#turndetect_engine	webrtc	# webrtc | energy
+#turndetect_mode	2	# webrtc aggressiveness 0..3
+#turndetect_threshold	-40	# energy: speech above this level, dBov
+#turndetect_margin	10	# energy: dB over the tracked noise floor
+#turndetect_min_speech	200	# ms of speech that start a turn
+#turndetect_min_silence	800	# ms of silence that end it

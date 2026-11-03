@@ -81,6 +81,7 @@ set(MODULES
   swscale
   syslog
   tonedetect
+  turndetect
   turn
   uuid
   v4l2
