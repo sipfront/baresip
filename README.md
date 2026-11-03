@@ -317,6 +317,7 @@ stdio         Standard input/output UI driver
 stun          Session Traversal Utilities for NAT (STUN) module
 swscale       Video scaling using libswscale
 syslog        Syslog module
+turndetect    Speaking-turn detection on the incoming audio (TURN_START / TURN_END)
 turn          Obtaining Relay Addresses from STUN (TURN) module
 uuid          UUID generator and loader
 v4l2          Video4Linux2 video source

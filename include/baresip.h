@@ -968,6 +968,9 @@ enum ua_event {
 	UA_EVENT_AUDIO_LATENCY_OUTGOING,  /**< Tone sent on encoder side */
 	UA_EVENT_AUDIO_LATENCY_INCOMING,  /**< Tone detected on decoder side */
 
+	UA_EVENT_TURN_START,  /**< Far end began a speaking turn */
+	UA_EVENT_TURN_END,    /**< Far end ended a speaking turn */
+
 	UA_EVENT_MAX,
 	UA_EVENT_SUB_NOTIFY,
 };
