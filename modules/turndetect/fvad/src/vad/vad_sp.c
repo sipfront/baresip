@@ -75,7 +75,9 @@ int16_t WebRtcVad_FindMinimum(VadInstT* self,
       age[i]++;
     } else {
       // Too old value. Remove from memory and shift larger values downwards.
-      for (j = i; j < 16; j++) {
+      // (j < 15: slot 15 is set below; j = 15 read one past the channel's
+      // slice, and past the whole array for the last channel.)
+      for (j = i; j < 15; j++) {
         smallest_values[j] = smallest_values[j + 1];
         age[j] = age[j + 1];
       }
