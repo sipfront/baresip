@@ -26,8 +26,6 @@ static int auplay_write_thread(void *arg);
 static void free_audio_queue(struct list *queue, mtx_t *mutex);
 static void free_event_queue(struct list *queue, mtx_t *mutex);
 static int safe_clear_buffer(struct mbuf *buffer, const char *buffer_name);
-static void send_audio_commit(void);
-static void force_audio_commit(void);
 static void maybe_shrink_injection_buffer(void);
 
 /* Decode-path uplink tap (runs on RTP thread after auresamp) */
@@ -124,7 +122,6 @@ int audio_init(void)
 
 	/* Initialize audio accumulation tracking */
 	g_audio.audio_accumulated = 0;
-	g_audio.commit_threshold = AUDIO_COMMIT_THRESHOLD;
 	g_audio.response_created = false;
 
 	/* Initialize circular buffer for smooth audio injection */
@@ -339,15 +336,11 @@ static void queue_pcm_append(const int16_t *s16_data, size_t sampc)
 		warning("openai_rt: Failed to queue PCM audio: %m\n", err);
 	}
 	else {
+		/* No input_audio_buffer.commit: the session runs server-side
+		 * turn detection, which commits on its own. The conversation
+		 * start (wait_for_greeting=no) is the I/O thread's job as
+		 * well, see maybe_start_conversation() in websocket.c. */
 		g_audio.audio_accumulated += byte_len;
-		if (g_audio.audio_accumulated >= g_audio.commit_threshold) {
-			if (g_oairt.session_cfg_applied)
-				send_audio_commit();
-			else
-				DEBUG_INFO("Skipping commit - session not"
-					   " ready yet\n");
-			g_audio.audio_accumulated = 0;
-		}
 	}
 	mem_deref(json_msg);
 }
@@ -981,8 +974,7 @@ void audio_stop_threads(void)
 		DEBUG_INFO("Audio playback thread ended\n");
 	}
 
-	/* Force commit any remaining audio data */
-	force_audio_commit();
+	g_audio.audio_accumulated = 0;
 
 	/* Don't clear WebSocket queue immediately - let it finish sending any
 	 * pending messages */
@@ -1153,11 +1145,26 @@ bool audio_tts_playback_pending(void)
 /* Public function to receive audio from baresip */
 void openai_rt_receive_audio(const int16_t *sampv, size_t sampc)
 {
+	size_t i;
+
 	if (!g_oairt.call_active || !sampv || sampc == 0)
 		return;
 
 	if (g_audio.play_st)
 		g_audio.play_st->total_samples_received += sampc;
+
+	/* Timestamp of the far end's last audible frame, so the turn log
+	 * can show how long after the far end went quiet the server
+	 * decided its turn was over. Diagnostics only. */
+	for (i = 0; i < sampc; i++) {
+		int16_t a = sampv[i] < 0 ? (int16_t)-sampv[i] : sampv[i];
+
+		if (a >= UPLINK_VOICE_PEAK_MIN) {
+			latency_note_uplink_voice();
+			break;
+		}
+	}
+
 	handle_incoming_audio(sampv, sampc);
 }
 
@@ -1217,8 +1224,12 @@ int audio_queue_event(enum event_type type, void *data)
 	cnd_signal(&g_audio.event_queue_cond);
 	mtx_unlock(&g_audio.event_queue_mutex);
 
+	/* The I/O thread sleeps in lws_service() between traffic; every
+	 * call lifecycle event needs it to act now. */
 	if (type == EVENT_CALL_START)
 		websocket_kick_session_setup();
+	else
+		websocket_wake();
 
 	/* If this is a call start event and audio drivers are ready, start
 	 * threads */
@@ -1325,59 +1336,6 @@ static int safe_clear_buffer(struct mbuf *buffer, const char *buffer_name)
 	return 0;
 }
 
-/* Send commit message to AI model to process accumulated audio */
-static void send_audio_commit(void)
-{
-	struct ai_model *model = get_ai_model();
-	char *response_msg = NULL;
-	int err;
-
-	if (g_oairt.ws_state != WS_CONNECTED || !g_oairt.ws_client)
-		return;
-
-	/* Note: explicit commit not needed since we're using server_vad */
-
-	if (g_oairt.wait_for_greeting) {
-		g_audio.response_created = true;
-	}
-
-	/* A response.create must not overtake the output of a tool that
-	 * is still running (possibly from the previous call); retried on
-	 * the next commit once it is queued. */
-	if (!g_audio.response_created && g_oairt.call_active &&
-		!tool_batch_outputs_pending() &&
-		model && model->build_response_create) {
-		err = model->build_response_create(g_oairt.prompt,
-			&response_msg);
-
-		if (!err && response_msg) {
-			err = queue_message_to_openai(response_msg,
-				str_len(response_msg), NULL, NULL);
-			if (err) {
-				warning("openai_rt: Failed to queue"
-					" response.create message: %m\n", err);
-			}
-			else {
-				DEBUG_INFO("Response.create message queued\n");
-				g_audio.response_created = true;
-			}
-			mem_deref(response_msg);
-		}
-	}
-
-	g_audio.audio_accumulated = 0;
-}
-
-/* Force commit any remaining audio data */
-static void force_audio_commit(void)
-{
-	if (g_audio.audio_accumulated > 0) {
-		DEBUG_INFO("Forcing commit of remaining %zu bytes of audio\n",
-			g_audio.audio_accumulated);
-		send_audio_commit();
-	}
-}
-
 /* Reset audio state for new call */
 void audio_reset_for_new_call(void)
 {
@@ -1402,7 +1360,8 @@ void audio_reset_for_new_call(void)
 	DEBUG_INFO("Audio state reset for new call\n");
 }
 
-/* Flush accumulated audio when session becomes ready */
+/* Session became ready: push out the partial uplink batch and account
+ * for what was appended before the server had our configuration. */
 void audio_flush_accumulated(void)
 {
 	audio_flush_uplink_batch();
@@ -1410,10 +1369,10 @@ void audio_flush_accumulated(void)
 	if (g_audio.audio_accumulated > 0) {
 		double ms = (double)g_audio.audio_accumulated / 2
 			/ 24000.0 * 1000.0;
-		info("openai_rt: flushing %.1f ms (%u bytes) of accumulated"
-		     " audio\n",
+		info("openai_rt: %.1f ms (%u bytes) of uplink audio were"
+		     " appended before the session was configured\n",
 			 ms, (unsigned)g_audio.audio_accumulated);
-		send_audio_commit();
+		g_audio.audio_accumulated = 0;
 	}
 }
 

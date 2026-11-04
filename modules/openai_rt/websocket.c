@@ -8,6 +8,7 @@
  #include <libwebsockets.h>
  #include <json-c/json.h>
  #include <pthread.h>
+ #include <re_atomic.h>
  #include "openai_rt.h"
  #include "trace.h"
  #include "ai_model.h"
@@ -27,7 +28,7 @@ static void send_response_create(void);
 static struct ws_message *ws_message_alloc(const char *json_msg,
 	size_t len, void (*callback)(void *arg, int err), void *arg);
 static void ws_message_enqueue(struct ws_message *msg);
-static void process_conversation_kick_pending(void);
+static void maybe_start_conversation(void);
 
 /* Callbacks for AI model message parsing */
 static void handle_audio_delta(const char *base64_audio, void *arg);
@@ -199,6 +200,99 @@ static inline void ws_wake_service(void)
 		/* break poll and run lws_service() ASAP */
 		lws_cancel_service(g_oairt.ws_context);
 	}
+}
+
+void websocket_wake(void)
+{
+	ws_wake_service();
+}
+
+/* Turn-latency timeline, in ms of tmr_jiffies(). Written on the I/O
+ * thread, except last_voice (RTP thread) and call_established (RE
+ * thread), which are exchanged relaxed-atomically: a stale read costs
+ * a slightly off number in a log line, nothing else. The lines these
+ * produce separate what the server takes (end-of-turn decision, time to
+ * first audio) from what this module adds. */
+static struct {
+	uint64_t connect_start;
+	uint64_t speech_stopped;
+	uint64_t response_created;
+	bool audio_seen;          /* first audio of this response logged */
+	RE_ATOMIC uint64_t last_voice;
+	RE_ATOMIC uint64_t call_established;
+} lat;
+
+static unsigned ms_since(uint64_t t, uint64_t now)
+{
+	return (t && now >= t) ? (unsigned)(now - t) : 0;
+}
+
+void latency_note_uplink_voice(void)
+{
+	re_atomic_rlx_set(&lat.last_voice, tmr_jiffies());
+}
+
+void latency_note_call_established(void)
+{
+	re_atomic_rlx_set(&lat.call_established, tmr_jiffies());
+}
+
+void latency_note_speech_started(void)
+{
+	uint64_t now = tmr_jiffies();
+	uint64_t voice = re_atomic_rlx(&lat.last_voice);
+
+	if (voice)
+		info("openai_rt: turn: far end started speaking (server VAD),"
+		     " %u ms after the uplink last carried voice\n",
+		     ms_since(voice, now));
+	else
+		info("openai_rt: turn: far end started speaking (server VAD),"
+		     " no voice seen on the uplink yet\n");
+}
+
+void latency_note_speech_stopped(void)
+{
+	uint64_t now = tmr_jiffies();
+	uint64_t voice = re_atomic_rlx(&lat.last_voice);
+
+	lat.speech_stopped = now;
+	info("openai_rt: turn: far end stopped speaking (server decision),"
+	     " %u ms after the uplink went quiet\n",
+	     ms_since(voice, now));
+}
+
+void latency_note_response_created(void)
+{
+	uint64_t now = tmr_jiffies();
+
+	lat.response_created = now;
+	lat.audio_seen = false;
+	if (lat.speech_stopped)
+		info("openai_rt: turn: response.created %u ms after the far"
+		     " end stopped speaking\n",
+		     ms_since(lat.speech_stopped, now));
+	else
+		info("openai_rt: turn: response.created (not preceded by a"
+		     " far-end turn)\n");
+}
+
+/* I/O thread: the first audible audio chunk of the current response. */
+static void latency_note_first_audio(void)
+{
+	uint64_t now = tmr_jiffies();
+
+	if (lat.audio_seen)
+		return;
+	lat.audio_seen = true;
+
+	info("openai_rt: turn: first audio %u ms after response.created,"
+	     " %u ms after the far end stopped speaking, %u ms after the"
+	     " uplink went quiet\n",
+	     ms_since(lat.response_created, now),
+	     ms_since(lat.speech_stopped, now),
+	     ms_since(re_atomic_rlx(&lat.last_voice), now));
+	lat.speech_stopped = 0;
 }
 
 /* Tool-call batch accounting for the OpenAI backend.
@@ -1157,6 +1251,8 @@ static void handle_audio_delta(const char *base64_audio, void *arg)
 			return;
 		}
 
+		latency_note_first_audio();
+
 		int err = write_to_injection_buffer(pcm, nsamp);
 		if (err) {
 			warning("openai_rt: write_to_injection_buffer failed:"
@@ -1177,21 +1273,31 @@ static void handle_audio_delta(const char *base64_audio, void *arg)
 
 static void handle_session_updated_cb(void *arg)
 {
+	uint64_t now = tmr_jiffies();
+	uint64_t established = re_atomic_rlx(&lat.call_established);
 	(void)arg;
 
 	g_oairt.session_cfg_applied = true;
 	g_oairt.session_ready = true;
-	info("openai_rt: session.updated received; input_audio_format now"
-	     " active\n");
+	info("openai_rt: session.updated received; session ready %u ms after"
+	     " the connect started\n",
+	     ms_since(lat.connect_start, now));
+	/* The session is normally ready long before the first call. When
+	 * it is not, uplink audio before the connection came up was not
+	 * relayed, and the far end may already be talking. */
+	if (g_oairt.call_active && established)
+		warning("openai_rt: session became ready %u ms after"
+			" CALL_ESTABLISHED (connection set up during the"
+			" call)\n",
+			ms_since(established, now));
 	audio_flush_accumulated();
-	if (!g_oairt.wait_for_greeting)
-		g_oairt.conversation_kick_pending = true;
 }
 
 static void handle_speech_started_cb(void *arg)
 {
 	(void)arg;
 
+	latency_note_speech_started();
 	DEBUG_INFO("openai_rt: speech.started, interrupting outbound TTS\n");
 	/* Record the barge-in as a turn-taking event for the evaluator. */
 	trace_add_event("speech_started");
@@ -1583,7 +1689,9 @@ static void handle_response_done_cb(const char *response_json, void *arg)
 
 	 case LWS_CALLBACK_CLIENT_ESTABLISHED:
 		 {
-			 info("openai_rt: WebSocket connection established\n");
+			 info("openai_rt: WebSocket connection established"
+			      " %u ms after the connect started\n",
+			      ms_since(lat.connect_start, tmr_jiffies()));
 			 g_oairt.ws_state = WS_CONNECTED;
 			 g_oairt.ws_client = wsi;
 
@@ -1591,7 +1699,6 @@ static void handle_response_done_cb(const char *response_json, void *arg)
 			 */
 			 g_oairt.session_ready = false;
 			 g_oairt.session_cfg_applied = false;
-			 g_oairt.conversation_kick_pending = false;
 			 tool_batch_reset();
 
 			 send_session_update();
@@ -1655,7 +1762,6 @@ static void handle_response_done_cb(const char *response_json, void *arg)
 		 g_oairt.session_ready = false;
 		 g_oairt.session_cfg_applied = false;
 		 g_oairt.setup_sent = false;
-		 g_oairt.conversation_kick_pending = false;
 		 tool_batch_new_session();
 		 break;
 
@@ -1670,7 +1776,6 @@ static void handle_response_done_cb(const char *response_json, void *arg)
 		g_oairt.session_ready = false;
 		g_oairt.session_cfg_applied = false;
 		g_oairt.setup_sent = false;
-		g_oairt.conversation_kick_pending = false;
 		tool_batch_new_session();
 		break;
 
@@ -1720,7 +1825,16 @@ static void handle_response_done_cb(const char *response_json, void *arg)
 		 break;
 
 	 case LWS_CALLBACK_EVENT_WAIT_CANCELLED:
-		 /*info("openai_rt: Event wait cancelled\n"); */
+		 /* Delivered on the service thread after a foreign thread
+		  * called lws_cancel_service() (ws_wake_service). The
+		  * writable request for whatever that thread queued is made
+		  * here: lws_callback_on_writable() is not safe to call
+		  * from other threads, lws_cancel_service() is. */
+		 pthread_mutex_lock(&g_oairt.ws_mutex);
+		 if (g_oairt.ws_state == WS_CONNECTED && g_oairt.ws_client &&
+		     !list_isempty(&g_oairt.to_openai_queue))
+			 lws_callback_on_writable(g_oairt.ws_client);
+		 pthread_mutex_unlock(&g_oairt.ws_mutex);
 		 break;
 
 	 case LWS_CALLBACK_HTTP:
@@ -1806,6 +1920,7 @@ static void handle_response_done_cb(const char *response_json, void *arg)
 
 	 info("openai_rt: Initiating WebSocket connection to AI model...\n");
 	 g_oairt.ws_state = WS_CONNECTING;
+	 lat.connect_start = tmr_jiffies();
 
 	 memset(&ccinfo, 0, sizeof(ccinfo));
 	 ccinfo.context = g_oairt.ws_context;
@@ -1856,7 +1971,6 @@ static void handle_response_done_cb(const char *response_json, void *arg)
 	 g_oairt.session_ready = false;
 	 g_oairt.session_cfg_applied = false;
 	 g_oairt.setup_sent = false;
-	 g_oairt.conversation_kick_pending = false;
 	 tool_batch_new_session();
 
 	 info("openai_rt: WebSocket disconnected from AI model\n");
@@ -1908,6 +2022,9 @@ static void handle_response_done_cb(const char *response_json, void *arg)
 	 }
  }
 
+/* RE thread. The session.update is queued from here; the writable
+ * request for it is made on the I/O thread once the wake is seen
+ * (LWS_CALLBACK_EVENT_WAIT_CANCELLED). */
 void websocket_kick_session_setup(void)
 {
 	if (g_oairt.ws_state == WS_CONNECTED && !g_oairt.session_ready &&
@@ -1915,21 +2032,24 @@ void websocket_kick_session_setup(void)
 		send_session_update();
 
 	ws_wake_service();
-
-	if (g_oairt.ws_state == WS_CONNECTED && g_oairt.ws_client)
-		lws_callback_on_writable(g_oairt.ws_client);
 }
 
 
-static void process_conversation_kick_pending(void)
+/* I/O thread, every pass of the service loop: when we are to speak first
+ * (wait_for_greeting=no), start the conversation as soon as a call is
+ * active on a configured session. Derived from state on each pass, not
+ * armed once by session.updated: the connection is set up before the
+ * first call and reused across calls, so a flag armed at session.updated
+ * served the first call only, and every later call on the connection
+ * waited for the (since removed) 800 ms audio-commit fallback before its
+ * first response.create. */
+static void maybe_start_conversation(void)
 {
-	if (!g_oairt.conversation_kick_pending)
+	if (g_oairt.wait_for_greeting)
 		return;
 	if (g_oairt.ws_state != WS_CONNECTED || !g_oairt.ws_client)
 		return;
-	if (!g_oairt.session_cfg_applied || g_oairt.wait_for_greeting)
-		return;
-	if (!g_oairt.call_active)
+	if (!g_oairt.session_cfg_applied || !g_oairt.call_active)
 		return;
 	if (g_audio.response_created)
 		return;
@@ -1937,7 +2057,6 @@ static void process_conversation_kick_pending(void)
 	if (tool_batch_outputs_pending())
 		return;
 
-	g_oairt.conversation_kick_pending = false;
 	info("openai_rt: Starting AI conversation (wait_for_greeting=no)\n");
 	send_response_create();
 	if (g_oairt.ws_client)
@@ -2016,25 +2135,17 @@ static struct ws_message *ws_message_alloc(const char *json_msg,
 	return msg;
 }
 
-/* Append to the outgoing queue and wake the I/O thread. */
+/* Append to the outgoing queue and wake the I/O thread, which requests
+ * the writable callback itself (LWS_CALLBACK_EVENT_WAIT_CANCELLED): the
+ * callers run on the RE, RTP and tool threads, and lws_cancel_service()
+ * is the one libwebsockets call that may be made from another thread. */
 static void ws_message_enqueue(struct ws_message *msg)
 {
 	pthread_mutex_lock(&g_oairt.ws_mutex);
 	list_append(&g_oairt.to_openai_queue, &msg->le, msg);
 	pthread_mutex_unlock(&g_oairt.ws_mutex);
 
-	/* Wake the I/O thread right away */
 	ws_wake_service();
-
-	/* If already connected, also request a writable callback */
-	if (g_oairt.ws_state == WS_CONNECTED && g_oairt.ws_client) {
-		lws_callback_on_writable(g_oairt.ws_client);
-	}
-	else {
-		DEBUG_INFO("ws_message_enqueue: Not requesting writable"
-			   " (state=%d, client=%p)\n",
-			   g_oairt.ws_state, g_oairt.ws_client);
-	}
 }
 
 int queue_message_to_openai(const char *json_msg, size_t len,
@@ -2134,16 +2245,29 @@ int queue_message_to_openai(const char *json_msg, size_t len,
 
 	while (g_oairt.ws_thread_running) {
 		/* Service the context to advance the handshake / IO state
-		 * machine */
-		int ret = lws_service(g_oairt.ws_context, 10);
+		 * machine. lws_service() returns on socket activity, a due
+		 * libwebsockets timer or a wake (ws_wake_service); its
+		 * timeout argument is ignored since libwebsockets 3.2. */
+		int ret = lws_service(g_oairt.ws_context, 0);
 		if (ret < 0) {
 			warning("openai_rt: lws_service returned error: %d\n",
 				ret);
+			/* do not spin on a context that keeps failing */
+			sys_msleep(10);
 		}
 
 		if (!g_oairt.ws_thread_running) {
 			break;
 		}
+
+		/* Anything queued since the last pass gets its writable
+		 * request here, on the service thread (also done on the
+		 * wake callback; this pass makes it independent of it). */
+		pthread_mutex_lock(&g_oairt.ws_mutex);
+		if (g_oairt.ws_state == WS_CONNECTED && g_oairt.ws_client &&
+		    !list_isempty(&g_oairt.to_openai_queue))
+			lws_callback_on_writable(g_oairt.ws_client);
+		pthread_mutex_unlock(&g_oairt.ws_mutex);
 
 		uint64_t now = lws_now_usecs();
 
@@ -2242,10 +2366,11 @@ int queue_message_to_openai(const char *json_msg, size_t len,
 			mem_deref(event);
 		}
 
-		process_conversation_kick_pending();
+		maybe_start_conversation();
 
-		/* Gentle pacing */
-		sys_msleep(g_oairt.ws_state == WS_CONNECTING ? 1 : 10);
+		/* No pacing sleep here: lws_service() already blocks until
+		 * there is something to do, and a sleep after it delayed
+		 * every message, in both directions, by its length. */
 	}
 
 	 info("openai_rt: WebSocket thread ended\n");
