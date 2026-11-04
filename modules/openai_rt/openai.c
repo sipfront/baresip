@@ -852,7 +852,6 @@ static bool openai_event_is_ignored(const char *type)
 {
 	static const char *const ignored[] = {
 		"session.created",
-		"input_audio_buffer.speech_stopped",
 		"input_audio_buffer.committed",
 		"input_audio_buffer.cleared",
 		"conversation.item.created",
@@ -931,7 +930,14 @@ static int openai_parse_message(const char *json_str,
 			speech_started_cb(cb_arg);
 		}
 	}
+	else if (strcmp(type, "input_audio_buffer.speech_stopped") == 0) {
+		/* The server's end-of-turn decision; with server_vad it
+		 * trails the silence by silence_duration_ms, with
+		 * semantic_vad by however long the model waits. */
+		latency_note_speech_stopped();
+	}
 	else if (strcmp(type, "response.created") == 0) {
+		latency_note_response_created();
 		/* Stamp the response with the current call generation so
 		 * that its function calls (in response.done) can be told
 		 * apart from a response the model started for a call that

@@ -438,6 +438,14 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 			DEBUG_INFO("Call "
 				"established - checking session readiness\n");
 
+			/* Reset the audio state BEFORE the call is activated:
+			 * once it is active, the I/O thread starts the
+			 * conversation as soon as it sees no response created
+			 * for it yet (wait_for_greeting=no), and a reset after
+			 * the activation could clear that mark again and start
+			 * it a second time. */
+			audio_reset_for_new_call();
+
 			/* New call: invalidate everything the previous one
 			 * left behind and mark the call active in one step
 			 * under the batch lock, or the I/O thread could
@@ -457,9 +465,6 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 			/* Start a fresh conversation trace for this call
 			 * (no-op unless enabled) */
 			trace_reset();
-
-			/* Reset audio state for new call */
-			audio_reset_for_new_call();
 
 			/* Kick session.update without blocking the UA event
 			 * chain (sndfile etc.) */
@@ -496,6 +501,12 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 				warning("openai_rt: Audio drivers not ready "
 					"when call established\n");
 			}
+
+			latency_note_call_established();
+			/* Have the I/O thread act on the active call now
+			 * (first-turn response.create) rather than at its next
+			 * wake by uplink audio. */
+			websocket_wake();
 		}
 		break;
 

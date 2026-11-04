@@ -100,7 +100,6 @@ struct openai_rt {
 	/* Gemini setup queued for current WS connection */
 	bool setup_sent;
 	bool speech_active;
-	bool conversation_kick_pending;
 
 	/* WebSocket thread */
 	pthread_t ws_thread;
@@ -182,6 +181,20 @@ bool tool_batch_outputs_pending(void);
  * current one. A WebSocket reconnect does not change it. */
 unsigned tool_exec_call_generation(void);
 void websocket_kick_session_setup(void);
+/* Wake the I/O thread so it re-evaluates call and session state now
+ * (first-turn response.create, queued call events). It otherwise sleeps
+ * in lws_service() until there is traffic or a due libwebsockets timer. */
+void websocket_wake(void);
+/* Turn-latency instrumentation: each note is a point on the timeline of
+ * one turn, and the log lines derived from them tell the server's share
+ * (end-of-turn decision, time to first audio) from this module's. */
+void latency_note_speech_started(void);
+void latency_note_speech_stopped(void);
+void latency_note_response_created(void);
+/* RE thread, CALL_ESTABLISHED */
+void latency_note_call_established(void);
+/* RTP thread: the uplink carried audio above UPLINK_VOICE_PEAK_MIN */
+void latency_note_uplink_voice(void);
 int queue_message_to_openai(const char *json_msg, size_t len,
 			    void (*callback)(void *arg, int err),
 			    void *arg);
@@ -282,11 +295,11 @@ struct audio_state {
 	/* Buffer for audio from call to OpenAI */
 	struct mbuf *g711u_input_buffer;
 	size_t buffer_size;                /* Size of audio buffers */
-	/* Amount of audio accumulated since last commit */
+	/* Bytes of uplink audio appended since the session was configured
+	 * (or the call started), for the log line at session.updated */
 	size_t audio_accumulated;
-	/* Threshold to trigger commit (in bytes) */
-	size_t commit_threshold;
-	/* Whether response.create has been sent for current session */
+	/* Whether the initial response.create of the current call has been
+	 * sent (wait_for_greeting=no) */
 	bool response_created;
 
 	/* Circular buffer for smooth audio injection */
@@ -309,10 +322,6 @@ struct audio_state {
 	size_t uplink_batch_len;           /* samples currently buffered */
 };
 
-/* Audio commit threshold - commit after accumulating this many bytes */
-/* 800ms at 24kHz PCM16 = 24000 * 2 * 0.8 = 38400 bytes */
-#define AUDIO_COMMIT_THRESHOLD 38400
-
 /* PoC: batch uplink PCM before one WS append
  * (reduces queue pressure on ECS) */
 #define UPLINK_BATCH_MS 100
@@ -321,6 +330,11 @@ struct audio_state {
 
 /* Skip near-silent output deltas (leading AAAA chunks from API) */
 #define OUTPUT_DELTA_PEAK_MIN 64
+
+/* Uplink peak above which the far end counts as talking, for the
+ * turn-latency log only (about -27 dBFS: well above G.711 comfort noise,
+ * well below speech). */
+#define UPLINK_VOICE_PEAK_MIN 1500
 
 /* Injection buffer sizing limits */
 /* Initial size in samples (16 seconds @ 8kHz) */

@@ -35,7 +35,13 @@ The `auplay` thread only drains `aubuf` so the RX buffer does not overflow; it d
 3. A JSON message with type `input_audio_buffer.append` is created containing the base64 audio.
 4. The message is queued to the websocket thread via the `to_openai_queue`.
 5. Audio data is NOT accumulated and explicitly committed with an `input_audio_buffer.commit`, the module rather relies on server side VAD to handle turns.
-6. If no `response.create` has been sent yet for the session, one is automatically triggered to start the conversation, but only if the `openai_rt_wait_for_greeting` is set to `no`. This is to control whether OpenAI should start talking first without waiting for the other end to talk, or whether the other end is supposed to talk first.
+6. With `openai_rt_wait_for_greeting` set to `no`, the websocket thread sends one `response.create` as soon as the call is established on a configured session, so the model speaks first; with `yes`, the far end is expected to talk first and the server-side turn detection creates the responses.
+
+### Connection timing and turn latency
+
+The websocket connection and the `session.update` are made when the module loads, not when a call starts, so a call that is established a second or more after startup finds a ready session. The log tells when that is not the case (`session became ready N ms after CALL_ESTABLISHED`): uplink audio before the connection came up is not relayed, so the dial should wait for `session.updated received` in that situation.
+
+Each turn logs its timeline (`openai_rt: turn: ...`) so the server's share of the response time can be told from the module's: the far end going quiet on the uplink, the server's `speech_stopped` decision, `response.created`, and the first audible audio chunk. On a `server_vad` session the first gap is the configured `silence_duration_ms`; on a `semantic_vad` session it is however long the model waits, which at `eagerness: low` is routinely seconds. The time from `response.created` to the first audio is the model's own; it grows with `reasoning.effort`.
 
 ### OpenAI to SIP
 
