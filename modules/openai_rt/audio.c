@@ -425,10 +425,17 @@ static int uplink_filt_decode(struct aufilt_dec_st *st, struct auframe *af)
 	if (af->fmt != AUFMT_S16LE)
 		return 0;
 
-	if (af->srate != 24000 && !uplink_filt_warned_srate) {
-		warning("openai_rt: uplink tap srate=%u (expected 24000); "
-			"load openai_rt.so before auresamp.so in config\n",
-			af->srate);
+	if (!uplink_filt_warned_srate) {
+		/* What the model is sent is what the player is configured
+		 * for: 24 kHz for OpenAI, 16 kHz for Gemini and the voice
+		 * pipeline. Checked once, on the call's first frame. */
+		uint32_t want = 24000;
+
+		(void)conf_get_u32(conf_cur(), "auplay_srate", &want);
+		if (af->srate != want)
+			warning("openai_rt: uplink tap srate=%u (expected"
+				" %u); load openai_rt.so before auresamp.so"
+				" in config\n", af->srate, want);
 		uplink_filt_warned_srate = true;
 	}
 
