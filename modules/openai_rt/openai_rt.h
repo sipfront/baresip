@@ -40,6 +40,9 @@ struct ws_message {
 	 * when that generation is reset, i.e. when its call ended. */
 	bool gen_bound;
 	unsigned gen;
+	/* Sent as a binary frame (raw audio for a backend that takes it so)
+	 * instead of a text frame. */
+	bool binary;
 };
 
 /* Maximum prompt length in bytes (including NUL). */
@@ -49,6 +52,8 @@ struct ws_message {
 enum ai_backend_type {
 	AI_BACKEND_OPENAI_REALTIME,
 	AI_BACKEND_GEMINI_LIVE,
+	/* Sipfront's voice pipeline service (STT, LLM and TTS per session) */
+	AI_BACKEND_SIPFRONT_PIPELINE,
 };
 
 /* Global module state */
@@ -62,8 +67,12 @@ struct openai_rt {
 	/* Comma-separated list of enabled tool calls
 	 * (e.g., "hangup_call,send_dtmf") */
 	char enabled_tools[256];
-	/* AI backend: "openai_realtime" or "gemini_live" */
+	/* AI backend: "openai_realtime", "gemini_live" or
+	 * "sipfront_pipeline" */
 	char backend[64];
+	/* sipfront_pipeline: the service's WebSocket URL (ws:// or wss://);
+	 * the session's token is api_key */
+	char pipeline_url[512];
 	/* OpenAI realtime model (default: gpt-realtime-2.1) */
 	char openai_model[128];
 	/* Gemini model for both regular and ephemeral auth */
@@ -185,6 +194,7 @@ void websocket_kick_session_setup(void);
 int queue_message_to_openai(const char *json_msg, size_t len,
 			    void (*callback)(void *arg, int err),
 			    void *arg);
+int queue_binary_to_openai(const uint8_t *data, size_t len);
 int queue_message_from_openai(const uint8_t *data, size_t len);
 void websocket_clear_message_queue(void);
 

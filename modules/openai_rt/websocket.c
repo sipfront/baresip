@@ -142,7 +142,7 @@ static void ws_log_received(const char *in, size_t len)
 		 if (!msg)
 			 break;
 
-		 is_audio = (msg->len > 0 &&
+		 is_audio = msg->binary || (msg->len > 0 &&
 			 (strstr((const char *)(msg->data + LWS_PRE),
 			  "\"audio\"") != NULL ||
 			  strstr((const char *)(msg->data + LWS_PRE),
@@ -467,7 +467,8 @@ static int ws_write_message(struct ws_message *msg, bool *stale)
 
 	if (!msg->gen_bound) {
 		return lws_write(g_oairt.ws_client, msg->data + LWS_PRE,
-				 msg->len, LWS_WRITE_TEXT);
+				 msg->len, msg->binary ? LWS_WRITE_BINARY
+						       : LWS_WRITE_TEXT);
 	}
 
 	pthread_mutex_lock(&tool_batch.mtx);
@@ -1175,6 +1176,55 @@ static void handle_audio_delta(const char *base64_audio, void *arg)
 	if (decoded) mem_deref(decoded);
 }
 
+/* Raw PCM (s16le, the audio source's rate) from a backend that sends its
+ * speech in binary frames: straight to the playback buffer. A frame may
+ * arrive in pieces, and a piece may end between the two bytes of a sample;
+ * the odd byte waits for the next piece. */
+static void handle_audio_binary(const uint8_t *data, size_t len)
+{
+	static uint8_t carry;
+	static bool have_carry;
+	static int16_t samples[4096];
+	size_t n = 0;
+
+	if (!data || !len)
+		return;
+
+	if (!g_oairt.call_active) {
+		have_carry = false;
+		return;
+	}
+
+	while (len > 0) {
+		if (have_carry) {
+			samples[n++] = (int16_t)(carry | (data[0] << 8));
+			have_carry = false;
+			data += 1;
+			len -= 1;
+		}
+		else if (len >= 2) {
+			samples[n++] = (int16_t)(data[0] | (data[1] << 8));
+			data += 2;
+			len -= 2;
+		}
+		else {
+			carry = data[0];
+			have_carry = true;
+			len = 0;
+		}
+
+		if (n == RE_ARRAY_SIZE(samples) || (len == 0 && n > 0)) {
+			int err = write_to_injection_buffer(samples, n);
+
+			if (err)
+				warning("openai_rt:"
+					" write_to_injection_buffer failed:"
+					" %m\n", err);
+			n = 0;
+		}
+	}
+}
+
 static void handle_session_updated_cb(void *arg)
 {
 	(void)arg;
@@ -1624,6 +1674,12 @@ static void handle_response_done_cb(const char *response_json, void *arg)
 
 	case LWS_CALLBACK_CLIENT_RECEIVE:
 		{
+			/* Raw audio of a backend that sends it so. */
+			if (lws_frame_is_binary(wsi)) {
+				handle_audio_binary((const uint8_t *)in, len);
+				break;
+			}
+
 			ws_log_received((const char *)in, len);
 
 			if (len > 0 && g_oairt.ws_state == WS_CONNECTED) {
@@ -1819,12 +1875,15 @@ static void handle_response_done_cb(const char *response_json, void *arg)
 	 ccinfo.protocol = NULL;
 	/* Auto-select WS version */
 	 ccinfo.ietf_version_or_minus_one = -1;
-	/* Verify cert + hostname in prod */
-	 ccinfo.ssl_connection = LCCSCF_USE_SSL;
+	/* Verify cert + hostname in prod. Only a backend that says so (a
+	 * voice pipeline on a developer's machine) connects without TLS. */
+	 ccinfo.ssl_connection = (model->use_tls && !model->use_tls())
+		? 0 : LCCSCF_USE_SSL;
 	/* Single authoritative pointer */
 	 ccinfo.pwsi = &g_oairt.ws_client;
 
-	 info("openai_rt: Connecting to wss://%s:%d%s\n",
+	 info("openai_rt: Connecting to %s://%s:%d%s\n",
+		  ccinfo.ssl_connection ? "wss" : "ws",
 		  ccinfo.address, ccinfo.port, ccinfo.path);
 	 info("openai_rt: Calling lws_client_connect_via_info...\n");
 
@@ -2035,6 +2094,29 @@ static void ws_message_enqueue(struct ws_message *msg)
 			   " (state=%d, client=%p)\n",
 			   g_oairt.ws_state, g_oairt.ws_client);
 	}
+}
+
+/* Queue raw audio as a binary frame (a backend with binary_audio). */
+int queue_binary_to_openai(const uint8_t *data, size_t len)
+{
+	struct ws_message *msg;
+
+	if (!data || !len)
+		return EINVAL;
+
+	if (g_oairt.ws_state == WS_DISCONNECTED ||
+		g_oairt.ws_state == WS_DISCONNECTING) {
+		return ENOTCONN;
+	}
+
+	msg = ws_message_alloc((const char *)data, len, NULL, NULL);
+	if (!msg)
+		return ENOMEM;
+
+	msg->binary = true;
+	ws_message_enqueue(msg);
+
+	return 0;
 }
 
 int queue_message_to_openai(const char *json_msg, size_t len,

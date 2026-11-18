@@ -315,6 +315,19 @@ static void queue_pcm_append(const int16_t *s16_data, size_t sampc)
 	}
 
 	byte_len = sampc * sizeof(int16_t);
+
+	/* A backend that takes raw audio gets the samples as they are, in a
+	 * binary frame; there is nothing to commit and no response to ask
+	 * for, the far side decides when it speaks. */
+	if (model->binary_audio) {
+		err = queue_binary_to_openai((const uint8_t *)s16_data,
+					     byte_len);
+		if (err)
+			warning("openai_rt: Failed to queue PCM audio:"
+				" %m\n", err);
+		return;
+	}
+
 	char *b64 = encode_audio_base64((const uint8_t *)s16_data, byte_len);
 	if (!b64) {
 		warning("openai_rt: base64 encode failed for %zu bytes\n",
