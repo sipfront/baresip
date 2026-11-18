@@ -16,6 +16,9 @@
  *   - "ready":  the session is up (as session.updated is for OpenAI),
  *   - "clear":  the far end spoke over the simulated party; drop what is
  *     buffered for playback,
+ *   - "transcript": what was just said, by either side; it goes into the
+ *     conversation trace (openai_rt_transcribe) as the transcripts of the
+ *     speech-to-speech models do,
  *   - "hangup" and "dtmf": the simulated party hangs up or presses keys;
  *     carried out by the module's tools (hangup_call, send_dtmf), which
  *     have to be enabled in openai_rt_tool_calls as for the other backends.
@@ -32,6 +35,7 @@
 
 #include "openai_rt.h"
 #include "ai_model.h"
+#include "trace.h"
 #include <json-c/json.h>
 #include <libwebsockets.h>
 #include <stdlib.h>
@@ -377,6 +381,20 @@ static int pipeline_parse_message(const char *json_str,
 					json_object_to_json_string(args),
 					cb_arg);
 			json_object_put(args);
+		}
+	}
+	else if (!strcmp(type, "transcript")) {
+		/* What was just said, for the conversation trace the evaluation
+		 * reads: the far end's turn as the service understood it, and
+		 * the simulated party's words as they begin to play. */
+		const char *role = str_field(root, "role");
+		const char *text = str_field(root, "text");
+
+		if (role && text && *text) {
+			if (!strcmp(role, "assistant"))
+				trace_add_turn(TRACE_ROLE_SELF, text);
+			else if (!strcmp(role, "user"))
+				trace_add_turn(TRACE_ROLE_OTHER, text);
 		}
 	}
 	else if (!strcmp(type, "error")) {
