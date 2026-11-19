@@ -412,9 +412,10 @@ static int pipeline_parse_message(const char *json_str,
 		}
 	}
 	else if (!strcmp(type, "transcript")) {
-		/* What was just said, for the conversation trace the evaluation
-		 * reads: the far end's turn as the service understood it, and
-		 * the simulated party's words as they begin to play. */
+		/* What was just said, for the conversation trace the
+		 * evaluation reads: the far end's turn as the service
+		 * understood it, and the simulated party's words as they
+		 * begin to play. */
 		const char *role = str_field(root, "role");
 		const char *text = str_field(root, "text");
 
