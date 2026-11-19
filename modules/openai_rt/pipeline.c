@@ -118,8 +118,24 @@ static int parse_url(struct pipeline_url *u)
 
 	slash = strchr(host, '/');
 	end = slash ? slash : host + strlen(host);
-	colon = memchr(host, ':', (size_t)(end - host));
-	hlen = (size_t)((colon ? colon : end) - host);
+	if (*host == '[') {
+		/* An IPv6 address in brackets: the host is what is between
+		 * them, and a port follows the closing one. */
+		const char *close = memchr(host, ']', (size_t)(end - host));
+
+		if (!close || (close + 1 != end && close[1] != ':')) {
+			warning("openai_rt: openai_rt_pipeline_url has no"
+				" usable host\n");
+			return EINVAL;
+		}
+		host += 1;
+		colon = close + 1 != end ? close + 1 : NULL;
+		hlen = (size_t)(close - host);
+	}
+	else {
+		colon = memchr(host, ':', (size_t)(end - host));
+		hlen = (size_t)((colon ? colon : end) - host);
+	}
 	if (hlen == 0 || hlen >= sizeof(u->host)) {
 		warning("openai_rt: openai_rt_pipeline_url has no usable"
 			" host\n");
@@ -230,14 +246,23 @@ static int pipeline_add_auth_headers(void *in, size_t len)
  * its edge. The prompt is not sent: the session was made with it. */
 static int pipeline_build_session_update(const char *prompt, char **json_msg)
 {
-	uint32_t in_rate = 16000, out_rate = 24000;
+	uint32_t in_rate = 0, out_rate = 0;
 	(void)prompt;
 
 	if (!json_msg)
 		return EINVAL;
 
+	/* Without them baresip runs both at the codec's rate, which this
+	 * side does not know here: the service would be told one rate and
+	 * sent another. */
 	(void)conf_get_u32(conf_cur(), "auplay_srate", &in_rate);
 	(void)conf_get_u32(conf_cur(), "ausrc_srate", &out_rate);
+	if (!in_rate || !out_rate) {
+		warning("openai_rt: the voice pipeline needs auplay_srate and"
+			" ausrc_srate in the config (8000, 16000, 24000 or"
+			" 48000)\n");
+		return EINVAL;
+	}
 
 	return re_sdprintf(json_msg,
 		"{\"type\":\"hello\",\"input_rate\":%u,\"output_rate\":%u}",

@@ -1180,10 +1180,18 @@ static void handle_audio_delta(const char *base64_audio, void *arg)
  * speech in binary frames: straight to the playback buffer. A frame may
  * arrive in pieces, and a piece may end between the two bytes of a sample;
  * the odd byte waits for the next piece. */
+static uint8_t carry;
+static bool have_carry;
+
+/* What was received is dropped (an interruption, a new connection): the
+ * half of a sample that waited for its other half goes with it. */
+static void audio_binary_reset(void)
+{
+	have_carry = false;
+}
+
 static void handle_audio_binary(const uint8_t *data, size_t len)
 {
-	static uint8_t carry;
-	static bool have_carry;
 	static int16_t samples[4096];
 	size_t n = 0;
 
@@ -1243,6 +1251,7 @@ static void handle_speech_started_cb(void *arg)
 	(void)arg;
 
 	DEBUG_INFO("openai_rt: speech.started, interrupting outbound TTS\n");
+	audio_binary_reset();
 	/* Record the barge-in as a turn-taking event for the evaluator. */
 	trace_add_event("speech_started");
 	audio_clear_injection_buffer();
@@ -1635,6 +1644,7 @@ static void handle_response_done_cb(const char *response_json, void *arg)
 		 {
 			 info("openai_rt: WebSocket connection established\n");
 			 g_oairt.ws_state = WS_CONNECTED;
+			 audio_binary_reset();
 			 g_oairt.ws_client = wsi;
 
 			/* not ready yet: wait for server to ack session.update
@@ -1674,8 +1684,13 @@ static void handle_response_done_cb(const char *response_json, void *arg)
 
 	case LWS_CALLBACK_CLIENT_RECEIVE:
 		{
-			/* Raw audio of a backend that sends it so. */
-			if (lws_frame_is_binary(wsi)) {
+			/* Raw audio of a backend that sends it so. Another
+			 * backend's binary frame is a message like any other
+			 * (Gemini Live sends its JSON in binary frames). */
+			struct ai_model *rx_model = get_ai_model();
+
+			if (lws_frame_is_binary(wsi) && rx_model &&
+			    rx_model->binary_audio) {
 				handle_audio_binary((const uint8_t *)in, len);
 				break;
 			}
