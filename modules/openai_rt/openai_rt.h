@@ -371,5 +371,6 @@ int calls_api_call(const char *method, const char *uri,
 		   const char *auth_username, const char *auth_password,
 		   const char *body, char **output);
 int calls_queue_voiceai_content(const char *side, const char *content);
+int calls_queue_voiceai_timing(const char *json);
 
 #endif /* OPENAI_RT_H */

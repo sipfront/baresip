@@ -16,6 +16,9 @@
  *   - "ready":  the session is up (as session.updated is for OpenAI),
  *   - "clear":  the far end spoke over the simulated party; drop what is
  *     buffered for playback,
+ *   - "timing": how long each step of an answer took; emitted as the
+ *     module event "openai_rt,timing,{...}" for whoever reads the call's
+ *     events.
  *   - "transcript": what was just said, by either side; it goes into the
  *     conversation trace (openai_rt_transcribe) as the transcripts of the
  *     speech-to-speech models do,
@@ -396,6 +399,17 @@ static int pipeline_parse_message(const char *json_str,
 			else if (!strcmp(role, "user"))
 				trace_add_turn(TRACE_ROLE_OTHER, text);
 		}
+	}
+	else if (!strcmp(type, "timing")) {
+		/* Where the time of the answer that begins to play went:
+		 * handed on as it is, for whoever reads the call's events. */
+		struct json_object *timing = NULL;
+
+		if (json_object_object_get_ex(root, "timing", &timing) &&
+		    json_object_is_type(timing, json_type_object))
+			(void)calls_queue_voiceai_timing(
+				json_object_to_json_string_ext(timing,
+					JSON_C_TO_STRING_PLAIN));
 	}
 	else if (!strcmp(type, "error")) {
 		const char *code = str_field(root, "code");

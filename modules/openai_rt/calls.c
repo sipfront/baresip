@@ -17,6 +17,7 @@ enum call_mq_events {
 	MQ_API_CALL,
 	MQ_TRANSFER,
 	MQ_VOICEAI_CONTENT,
+	MQ_VOICEAI_TIMING,
 };
 
 /* Every queued call action is also kept on this list until the handler
@@ -201,13 +202,14 @@ static void mqueue_handler(int id, void *data, void *arg)
 	    (calls_state.ua_shutdown && mq_is_action(id))) {
 		DEBUG_INFO("mqueue_handler: "
 			"Ignoring event %d during shutdown\n", id);
-		if (mq_is_action(id) || id == MQ_VOICEAI_CONTENT)
+		if (mq_is_action(id) || id == MQ_VOICEAI_CONTENT ||
+		    id == MQ_VOICEAI_TIMING)
 			mem_deref(data);
 		return;
 	}
 
 	/* Validate event ID to detect corruption */
-	if (id < 0 || id > MQ_VOICEAI_CONTENT) {
+	if (id < 0 || id > MQ_VOICEAI_TIMING) {
 		warning("openai_rt: Invalid mqueue event ID: %d (possible "
 			"corruption)\n", id);
 		return;
@@ -328,6 +330,27 @@ static void mqueue_handler(int id, void *data, void *arg)
 					"call for voice-AI content\n");
 			}
 			/* Free the allocated payload string */
+			mem_deref(payload);
+		}
+		break;
+
+	case MQ_VOICEAI_TIMING:
+		{
+			/* Where the time of an answer went, as the voice
+			 * pipeline reports it: a module event, so that it is
+			 * in the call's events beside the turns. */
+			char *payload = (char *)data;
+			struct call *call = calls_state.ua_shutdown
+				? NULL
+				: (g_oairt.current_call
+					? g_oairt.current_call
+					: calls_state.content_call);
+
+			if (call) {
+				module_event("openai_rt", "timing",
+					     call_get_ua(call), call, "%s",
+					     payload);
+			}
 			mem_deref(payload);
 		}
 		break;
@@ -1210,4 +1233,28 @@ int calls_queue_voiceai_content(const char *side, const char *content)
 	}
 
 	return 0;
+}
+
+/* Queue the timing of an answer (a JSON object, as the voice pipeline sent
+ * it) to be emitted as a module event from the RE main thread. */
+int calls_queue_voiceai_timing(const char *json)
+{
+	char *payload = NULL;
+	int err;
+
+	if (calls_state.shutting_down)
+		return EINTR;
+
+	if (!calls_state.mq || !json)
+		return EINVAL;
+
+	err = str_dup(&payload, json);
+	if (err)
+		return err;
+
+	err = mqueue_push(calls_state.mq, MQ_VOICEAI_TIMING, payload);
+	if (err)
+		mem_deref(payload);
+
+	return err;
 }
