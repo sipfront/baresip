@@ -31,6 +31,7 @@ set(SRCS
     calls.c
     openai.c
     gemini.c
+    pipeline.c
     ai_model.c
     trace.c)
 

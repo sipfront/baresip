@@ -55,6 +55,7 @@ The module requires the following configuration parameters in your baresip confi
 - `openai_rt_wait_for_greeting` - Whether OpenAI is instructed to actively start the conversation bu sending a `response.create` message to OpenAI 
 - `openai_rt_openai_model` - OpenAI realtime model name (default: `gpt-realtime-2.1`)
 - `openai_rt_gemini_model` - Gemini model name for both regular and ephemeral auth keys (default: `gemini-2.5-flash-native-audio-preview-09-2025`)
+- `openai_rt_pipeline_url` - `sipfront_pipeline` backend only: the WebSocket URL of Sipfront's voice pipeline service, `wss://host[:port]/v1/ws` (`ws://` for one on a developer's machine). With this backend the simulated party is not a speech-to-speech model: the service hears the call through a speech-to-text vendor, answers with a language model and speaks through a text-to-speech vendor, each chosen when the session is made. The module is only the bridge: `openai_rt_api_key` is the session's token (sent as `Authorization: Bearer`), the call's audio goes out as binary frames of PCM at `auplay_srate` and comes back at `ausrc_srate` (both named in the hello), and the service's events are carried out here: `clear` drops what is buffered for playback, `hangup` and `dtmf` run the `hangup_call` and `send_dtmf` tools, which have to be enabled in `openai_rt_tool_calls`. `openai_rt_prompt`, `openai_rt_voice` and the model settings are not used; the session was made with them. A token is good for one connection, so one baresip run is one session.
 
 ### Audio Settings
 

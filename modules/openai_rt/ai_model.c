@@ -20,6 +20,8 @@ struct ai_model *get_ai_model(void)
 		return &openai_model;
 	case AI_BACKEND_GEMINI_LIVE:
 		return &gemini_model;
+	case AI_BACKEND_SIPFRONT_PIPELINE:
+		return &pipeline_model;
 	default:
 		/* Default to OpenAI if unknown */
 		warning("openai_rt: Unknown backend type %d,"

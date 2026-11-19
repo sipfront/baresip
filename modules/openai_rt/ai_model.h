@@ -183,11 +183,22 @@ struct ai_model {
 			     void (*response_done_cb)(
 				     const char *response_json, void *arg),
 			     void *cb_arg);
+
+	/* Audio travels as binary WebSocket frames of raw PCM in both
+	 * directions, not base64 inside JSON: the call's audio is queued as
+	 * it is (build_audio_append is not used), and a binary frame received
+	 * goes to the playback buffer. Text frames are still parse_message's.
+	 */
+	bool binary_audio;
+
+	/* Whether the connection is TLS. NULL: always (the vendors' APIs). */
+	bool (*use_tls)(void);
 };
 
 /* AI model implementations - exported from their respective files */
 extern struct ai_model openai_model;
 extern struct ai_model gemini_model;
+extern struct ai_model pipeline_model;
 
 /* Get the current AI model implementation based on configuration */
 struct ai_model *get_ai_model(void);

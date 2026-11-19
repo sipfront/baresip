@@ -219,6 +219,9 @@ int read_config(void)
 		     g_oairt.openai_model, sizeof(g_oairt.openai_model));
 	conf_get_str(conf_cur(), "openai_rt_gemini_model",
 		     g_oairt.gemini_model, sizeof(g_oairt.gemini_model));
+	(void)conf_get_str(conf_cur(), "openai_rt_pipeline_url",
+			   g_oairt.pipeline_url,
+			   sizeof(g_oairt.pipeline_url));
 	g_oairt.wait_for_greeting = true;
 	conf_get_bool(conf_cur(), "openai_rt_wait_for_greeting",
 		      &g_oairt.wait_for_greeting);
@@ -290,6 +293,9 @@ int read_config(void)
 	}
 	else if (str_casecmp(g_oairt.backend, "gemini_live") == 0) {
 		g_oairt.backend_type = AI_BACKEND_GEMINI_LIVE;
+	}
+	else if (str_casecmp(g_oairt.backend, "sipfront_pipeline") == 0) {
+		g_oairt.backend_type = AI_BACKEND_SIPFRONT_PIPELINE;
 	}
 	else {
 		warning("openai_rt: Unknown backend '%s',"
