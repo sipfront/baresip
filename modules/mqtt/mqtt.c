@@ -256,17 +256,50 @@ static int module_init(void)
 }
 
 
+/* Upper bound for sending queued data on shutdown, so it cannot hang */
+#define SHUTDOWN_FLUSH_TIMEOUT_MS 2000
+
+
+/*
+ * Run the mosquitto network loop until all queued outgoing packets are
+ * written to the socket, or the deadline has passed.
+ *
+ * mosquitto_publish() and mosquitto_disconnect() only write directly if
+ * the socket accepts the data at once; anything else stays in the
+ * libmosquitto output queue and is lost on mosquitto_destroy().
+ */
+static void flush_output(struct mqtt *mqtt, uint64_t deadline)
+{
+	int ret;
+
+	while (mosquitto_want_write(mqtt->mosq)) {
+
+		if (tmr_jiffies() >= deadline) {
+			warning("mqtt: shutdown flush timed out, "
+				"queued data is dropped\n");
+			return;
+		}
+
+		ret = mosquitto_loop(mqtt->mosq, 50, 1);
+		if (ret != MOSQ_ERR_SUCCESS) {
+			warning("mqtt: shutdown flush failed (%s)\n",
+				mosquitto_strerror(ret));
+			return;
+		}
+	}
+}
+
+
 static int module_close(void)
 {
 	s_mqtt.fhs = fd_close(s_mqtt.fhs);
 
-	mqtt_publish_close();
-
-	mqtt_subscribe_close();
-
 	tmr_cancel(&s_mqtt.tmr);
 
-	if (s_mqtt.mosq) {
+	if (s_mqtt.mosq && s_mqtt.is_connected) {
+		const uint64_t deadline =
+			tmr_jiffies() + SHUTDOWN_FLUSH_TIMEOUT_MS;
+
 		int err = publish_buffered_messages(&s_mqtt);
 		if (err) {
 			warning(
@@ -275,8 +308,22 @@ static int module_close(void)
 			err);
 		}
 
-		mosquitto_disconnect(s_mqtt.mosq);
+		/* send the last events (e.g. UNREGISTERING, EXIT) */
+		flush_output(&s_mqtt, deadline);
 
+		/* send DISCONNECT, so the broker sees a clean disconnect */
+		mosquitto_disconnect(s_mqtt.mosq);
+		flush_output(&s_mqtt, deadline);
+
+		/* a lost connection in the flush loop may start a reconnect */
+		tmr_cancel(&s_mqtt.tmr);
+	}
+
+	mqtt_publish_close();
+
+	mqtt_subscribe_close();
+
+	if (s_mqtt.mosq) {
 		mosquitto_destroy(s_mqtt.mosq);
 		s_mqtt.mosq = NULL;
 	}
