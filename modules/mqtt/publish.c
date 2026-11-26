@@ -88,6 +88,8 @@ int publish_buffered_messages(struct mqtt *mqtt) {
 		warning("mqtt: publishing queued message (len=%d, data=%s)\n",
 			(int)str_len(msg), msg);
 
+		/* count first: on_publish may run inside mosquitto_publish() */
+		mqtt->pending_pub++;
 		ret = mosquitto_publish(mqtt->mosq,
 					NULL,
 					topic,
@@ -98,6 +100,7 @@ int publish_buffered_messages(struct mqtt *mqtt) {
 		if (ret != MOSQ_ERR_SUCCESS) {
 			warning("mqtt: failed to publish queue entry (%s)\n",
 				mosquitto_strerror(ret));
+			mqtt->pending_pub--;
 			err = EINVAL;
 			goto err;
 		}
@@ -151,6 +154,8 @@ int mqtt_publish_message(struct mqtt *mqtt, const char *topic,
 		goto err;
 
 
+	/* count first: on_publish may run inside mosquitto_publish() */
+	mqtt->pending_pub++;
 	ret = mosquitto_publish(mqtt->mosq,
 				NULL,
 				topic,
@@ -161,6 +166,7 @@ int mqtt_publish_message(struct mqtt *mqtt, const char *topic,
 	if (ret != MOSQ_ERR_SUCCESS) {
 		warning("mqtt: failed to publish (%s)\n",
 			mosquitto_strerror(ret));
+		mqtt->pending_pub--;
 		err = EINVAL;
 		goto out;
 	}

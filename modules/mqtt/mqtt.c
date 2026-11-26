@@ -116,6 +116,21 @@ static void tmr_reconnect(void *data)
 }
 
 
+/*
+ * Called when a publish is complete: for QoS 0 when it is sent,
+ * for QoS 1 on PUBACK, for QoS 2 on PUBCOMP.
+ */
+static void publish_callback(struct mosquitto *mosq, void *obj, int mid)
+{
+	struct mqtt *mqtt = obj;
+	(void)mosq;
+	(void)mid;
+
+	if (mqtt->pending_pub > 0)
+		--mqtt->pending_pub;
+}
+
+
 static void disconnect_callback(struct mosquitto *mosq, void *obj, int rc)
 {
 	struct mqtt *mqtt = obj;
@@ -210,6 +225,7 @@ static int module_init(void)
 	s_mqtt.is_connected = 0;
 	mosquitto_connect_callback_set(s_mqtt.mosq, connect_callback);
 	mosquitto_disconnect_callback_set(s_mqtt.mosq, disconnect_callback);
+	mosquitto_publish_callback_set(s_mqtt.mosq, publish_callback);
 
 	if (*mqttusername != '\0') {
 		ret = mosquitto_username_pw_set(s_mqtt.mosq, mqttusername,
@@ -262,17 +278,21 @@ static int module_init(void)
 
 /*
  * Run the mosquitto network loop until all queued outgoing packets are
- * written to the socket, or the deadline has passed.
+ * written to the socket and, if wait_pub is set, all publishes are
+ * complete (acknowledged for QoS > 0), or the deadline has passed.
  *
  * mosquitto_publish() and mosquitto_disconnect() only write directly if
  * the socket accepts the data at once; anything else stays in the
- * libmosquitto output queue and is lost on mosquitto_destroy().
+ * libmosquitto output queue and is lost on mosquitto_destroy(). QoS > 0
+ * messages over the in-flight limit are not even queued for writing yet.
  */
-static void flush_output(struct mqtt *mqtt, uint64_t deadline)
+static void flush_output(struct mqtt *mqtt, uint64_t deadline,
+			 bool wait_pub)
 {
 	int ret;
 
-	while (mosquitto_want_write(mqtt->mosq)) {
+	while (mosquitto_want_write(mqtt->mosq) ||
+	       (wait_pub && mqtt->pending_pub > 0)) {
 
 		if (tmr_jiffies() >= deadline) {
 			warning("mqtt: shutdown flush timed out, "
@@ -300,6 +320,10 @@ static int module_close(void)
 		const uint64_t deadline =
 			tmr_jiffies() + SHUTDOWN_FLUSH_TIMEOUT_MS;
 
+		/* the flush loop also reads; do not run incoming commands
+		 * after the user agents are closed */
+		mosquitto_message_callback_set(s_mqtt.mosq, NULL);
+
 		int err = publish_buffered_messages(&s_mqtt);
 		if (err) {
 			warning(
@@ -308,12 +332,13 @@ static int module_close(void)
 			err);
 		}
 
-		/* send the last events (e.g. UNREGISTERING, EXIT) */
-		flush_output(&s_mqtt, deadline);
+		/* send the last events (e.g. UNREGISTERING, EXIT) and
+		 * wait until they are complete */
+		flush_output(&s_mqtt, deadline, true);
 
 		/* send DISCONNECT, so the broker sees a clean disconnect */
 		mosquitto_disconnect(s_mqtt.mosq);
-		flush_output(&s_mqtt, deadline);
+		flush_output(&s_mqtt, deadline, false);
 
 		/* a lost connection in the flush loop may start a reconnect */
 		tmr_cancel(&s_mqtt.tmr);
