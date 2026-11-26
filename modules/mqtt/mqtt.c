@@ -223,6 +223,7 @@ static int module_init(void)
 		return err;
 
 	s_mqtt.is_connected = 0;
+	s_mqtt.pending_pub = 0;
 	mosquitto_connect_callback_set(s_mqtt.mosq, connect_callback);
 	mosquitto_disconnect_callback_set(s_mqtt.mosq, disconnect_callback);
 	mosquitto_publish_callback_set(s_mqtt.mosq, publish_callback);
