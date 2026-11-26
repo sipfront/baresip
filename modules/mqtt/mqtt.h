@@ -13,6 +13,7 @@ struct mqtt {
 	int pubqos;			/* QoS for publish */
 	int subqos;			/* QoS for subscribe */
 	int is_connected;
+	unsigned pending_pub;	/* publishes not yet completed */
 	struct tmr tmr;
 	re_sock_t fd;
 	struct re_fhs *fhs;
