@@ -96,6 +96,11 @@ static void tmr_reconnect(void *data)
 	struct mqtt *mqtt = data;
 	int err;
 
+	/* QoS 0 packets still queued are dropped on reconnect without a
+	 * publish callback; QoS > 0 messages are resent and complete later */
+	if (mqtt->pubqos == 0)
+		mqtt->pending_pub = 0;
+
 	err = mosquitto_reconnect(mqtt->mosq);
 	if (err == MOSQ_ERR_SUCCESS) {
 		mqtt->fd = mosquitto_socket(mqtt->mosq);
