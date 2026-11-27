@@ -88,7 +88,7 @@ int publish_buffered_messages(struct mqtt *mqtt) {
 		warning("mqtt: publishing queued message (len=%d, data=%s)\n",
 			(int)str_len(msg), msg);
 
-		/* count first: on_publish may run inside mosquitto_publish() */
+		/* count first: on_publish can run in mosquitto_publish() */
 		mqtt->pending_pub++;
 		ret = mosquitto_publish(mqtt->mosq,
 					NULL,
@@ -154,7 +154,7 @@ int mqtt_publish_message(struct mqtt *mqtt, const char *topic,
 		goto err;
 
 
-	/* count first: on_publish may run inside mosquitto_publish() */
+	/* count first: on_publish can run in mosquitto_publish() */
 	mqtt->pending_pub++;
 	ret = mosquitto_publish(mqtt->mosq,
 				NULL,
